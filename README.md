@@ -23,17 +23,24 @@ It gives an old Lumia a second life on the windscreen: live engine data from a c
 
 ## Install on a phone
 
-1. Download the latest `DriveDeck_x.y.z_ARM.zip` from [Releases](../../releases) and unzip it on a Windows PC.
-2. On the phone: *Settings › Update & security › For developers* – turn on **Developer mode** and **Device discovery**. Put the phone and the PC on the same Wi-Fi.
-3. Install with Microsoft's *WinAppDeployCmd* (part of the Windows 10 SDK) from the unzipped folder, e.g.:
-   ```powershell
-   .\install-to-phone.ps1
-   ```
-   The script finds the phone; on the first connection, tap **Pair** on the phone and type the code shown.
-   Alternatively use the phone's **Device Portal** (*For developers › Device Portal*) in a browser and upload the `.appx` together with the files in `Dependencies\arm`.
-4. Pair the ELM327 in the phone's *Settings › Devices › Bluetooth* (PIN usually `1234` or `0000`) and choose it in *DriveDeck › Settings › OBD-II*.
+**➡ Step-by-step guide: [INSTALL.md](INSTALL.md)** (requirements, two install methods, first start, connecting the car, updating, uninstalling, troubleshooting).
+
+In short:
+1. Download `DriveDeck_<version>_ARM.zip` from [Releases](../../releases) and unzip it on a Windows PC.
+2. On the phone: *Settings › Update & security › For developers* – turn on **Developer mode** and **Device discovery**; phone and PC on the same Wi-Fi.
+3. Run `install-to-phone.ps1` (needs the Windows 10 SDK) or upload the package through the phone's **Device Portal** in a browser, and pair with the code the phone shows.
+4. Optionally pair a classic-Bluetooth ELM327 (PIN `1234`/`0000`) and select it in *DriveDeck › Settings › OBD-II*.
 
 Recordings are stored in `Videos\DriveDeck` (visible over USB). A diagnostic log, `Videos\DriveDeck\DriveDeck-log.txt`, contains app events and errors only.
+
+## Project status
+
+| Area | Status |
+|---|---|
+| Dashboard UI, layout editor, settings | Runs on a Lumia 930 (Windows 10 Mobile 1607) |
+| Dashcam: loop recording, burned-in stamp, .srt/.gpx, storage limit | Verified on a Lumia 930 (1080p clips checked on a PC) |
+| Impact detection, incident saving | Implemented and unit-tested; not yet verified in a real impact (hopefully never) |
+| OBD-II via ELM327 | Implemented and tested against a simulated ELM327/CAN car (94 unit tests); **not yet tested in a real car** – feedback welcome |
 
 ## Build from source
 
@@ -60,7 +67,8 @@ Project layout:
 - There is a short gap (under a second) between loop segments.
 - The burned-in stamp is laid out for a landscape mount.
 - Generic OBD-II shows emission-related codes of the engine and gearbox only; other control units need a manufacturer tool.
-- Tested on a Lumia 930 with a SEAT Leon Mk4 in mind; other phones and cars may need tweaks. Reports and pull requests are welcome.
+- Only classic-Bluetooth ELM327 adapters are supported (not Bluetooth LE or Wi-Fi adapters).
+- Developed on a Lumia 930 with a SEAT Leon Mk4 (CAN) in mind; other phones and cars may need tweaks. Reports and pull requests are welcome.
 
 ## Safety, privacy and legal
 
