@@ -1,0 +1,13 @@
+<!-- .NET Native runtime directives: keep metadata for the settings types used by DataContractJsonSerializer. -->
+<Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">
+  <Application>
+    <Assembly Name="*Application*" Dynamic="Required All" />
+    <Type Name="DriveDeck.Core.AppSettings" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.ValueDefinition" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.WidgetConfig" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.DashboardPage" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.DashcamSettings" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.ObdSettings" DataContractJsonSerializer="Required All" />
+    <Type Name="DriveDeck.Core.UiSettings" DataContractJsonSerializer="Required All" />
+  </Application>
+</Directives>

@@ -1,0 +1,19 @@
+name: Core tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Run unit tests (OBD protocol, formulas, storage policy, impact detection, settings validation)
+        run: dotnet test tests/Core.Tests/Core.Tests.csproj --nologo

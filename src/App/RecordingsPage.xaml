@@ -1,0 +1,33 @@
+<Page
+    x:Class="DriveDeck.App.RecordingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedTheme="Dark"
+    Background="#FF0B0E12">
+    <Grid>
+        <Pivot x:Name="Tabs" Title="RECORDINGS">
+            <PivotItem Header="Incidents">
+                <Grid>
+                    <ListView x:Name="EventList" SelectionMode="None" IsItemClickEnabled="True" ItemClick="List_ItemClick" />
+                    <TextBlock x:Name="EventsEmpty" Text="No saved incidents. Impacts and the red save button store footage here." TextWrapping="Wrap" Foreground="Gray" Visibility="Collapsed" Margin="4,12" />
+                </Grid>
+            </PivotItem>
+            <PivotItem Header="Loop">
+                <Grid>
+                    <ListView x:Name="LoopList" SelectionMode="None" IsItemClickEnabled="True" ItemClick="List_ItemClick" />
+                    <TextBlock x:Name="LoopEmpty" Text="No loop recordings yet." Foreground="Gray" Visibility="Collapsed" Margin="4,12" />
+                </Grid>
+            </PivotItem>
+        </Pivot>
+
+        <Grid x:Name="Player" Visibility="Collapsed" Background="Black">
+            <MediaElement x:Name="Media" AreTransportControlsEnabled="True" AutoPlay="True" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8">
+                <Button Content="Previous" Click="Prev_Click" Margin="0,0,6,0" Background="#AA202630" />
+                <Button Content="Next" Click="Next_Click" Margin="0,0,6,0" Background="#AA202630" />
+                <Button Content="Close" Click="ClosePlayer_Click" Background="#AA202630" />
+            </StackPanel>
+            <TextBlock x:Name="PlayerTitle" Margin="12,14" VerticalAlignment="Top" HorizontalAlignment="Left" Foreground="#FFDDDDDD" />
+        </Grid>
+    </Grid>
+</Page>

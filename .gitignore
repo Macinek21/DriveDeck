@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+out/
+AppPackages/
+BundleArtifacts/
+TestResults/
+*.appx
+*.appxbundle
+*.appxsym
+*.msix
+
+# Signing keys and certificates are per-developer
+*.pfx
+*.cer
+
+# IDE
+.vs/
+*.user
+*.suo
