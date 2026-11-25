@@ -285,7 +285,7 @@ class SettingsTest {
         s.obd.custom.addAll(listOf(v("clear", "04", ""), v("inject", "01 0C", "7E0\rATMA"), v("ok", "22 11 bd", "7e0")))
         val r = Settings.fromJson(s.toJson())
         val q = r.settings!!
-        assertEquals(30, q.cam.bitrateMbps); assertEquals(30, q.cam.segmentSeconds); assertEquals(1024.0, q.cam.capGb, 0.0)
+        assertEquals(Video.MAX_MBIT, q.cam.bitrateMbps); assertEquals(30, q.cam.segmentSeconds); assertEquals(1024.0, q.cam.capGb, 0.0)
         assertEquals("112", q.cam.emergency); assertEquals("#FF3FA9F5", q.ui.accent); assertEquals("", q.obd.address)
         assertEquals(6, q.pages[0].rows)
         assertTrue(q.pages[0].tiles.all { it.col + it.cols <= q.pages[0].cols && it.row + it.rows <= q.pages[0].rows })
@@ -300,5 +300,62 @@ class SettingsTest {
             assertNotNull(Settings.fromJson(bad).error)
         for (odd in listOf("{\"cam\":5}", "{\"pages\":[null,1,{\"tiles\":[{\"kind\":\"EVIL\"},7]}]}", "{\"obd\":{\"custom\":[{}]}}"))
             assertNotNull(Settings.fromJson(odd).settings)
+    }
+}
+
+class VideoTest {
+    private fun m(res: String, fps: Int, hs: Boolean = false) = VideoMode(res, 1, 1, fps, fps, hs)
+    private val s7 = listOf(m("720p", 30), m("720p", 240, true), m("1080p", 24), m("1080p", 30), m("1080p", 60), m("1440p", 30), m("2160p", 30))
+
+    @Test fun picksExactOrClosest() {
+        assertEquals(m("1080p", 60), Video.pick(s7, "1080p", 60))
+        assertEquals(m("720p", 240, true), Video.pick(s7, "720p", 240))
+        assertEquals(m("2160p", 30), Video.pick(s7, "2160p", 60))
+        assertEquals("never jumps to high speed on its own", m("720p", 30), Video.pick(s7, "720p", 120))
+        assertEquals("smaller resolution first", m("720p", 30), Video.pick(listOf(m("720p", 30), m("2160p", 30)), "1440p", 30))
+        assertEquals(m("720p", 30), Video.pick(listOf(m("720p", 30)), "480p", 30))
+        assertNull(Video.pick(emptyList(), "1080p", 30))
+    }
+
+    private val s7params = "dualrecording-hint=-1;fast-fps-mode=-1;motion-speed=-1;preview-fps-range=15000,30000"
+    private val s7official = listOf(m("720p", 30), m("1080p", 30), m("1440p", 30), m("720p", 240, true))
+
+    @Test fun legacyModesComeFromPhoneInformation() {
+        assertEquals(listOf("1080p@60", "1440p@60", "2160p@30"), Video.legacyModes(s7params, null, s7official) { _, _, _ -> true }.map { it.id })
+        assertEquals("the chip must be able to encode it", listOf("1080p@60"), Video.legacyModes(s7params, null, s7official) { w, _, _ -> w == 1920 }.map { it.id })
+        assertTrue("other makers", Video.legacyModes("preview-fps-range=15000,30000", null, s7official) { _, _, _ -> true }.isEmpty())
+        assertTrue(Video.legacyModes(null, "CAMCORDER_RESOLUTION_3840X2160", s7official) { _, _, _ -> true }.isEmpty())
+        assertTrue("already official", Video.legacyModes(s7params, null, s7official + m("1080p", 60)) { _, _, _ -> true }.none { it.id == "1080p@60" })
+        val x = "<resolution name=\"CAMCORDER_RESOLUTION_1280X720_60FPS\"/>\n<other 3840x2160_60fps/>\n<resolution name=\"CAMCORDER_RESOLUTION_9999X999\"/>"
+        assertTrue("720p@60" in Video.legacyModes(s7params, x, s7official) { _, _, _ -> true }.map { it.id })
+        assertTrue("2160p@60" !in Video.legacyModes(s7params, x, s7official) { _, _, _ -> true }.map { it.id })
+    }
+
+    @Test fun bitrateCorrection() {
+        val m60 = VideoMode("1440p", 2560, 1440, 60, legacy = true)
+        assertEquals(0.5, Video.startScale(m60), 1e-9)
+        assertEquals(1.0, Video.startScale(VideoMode("2160p", 3840, 2160, 30, legacy = true)), 1e-9)
+        assertEquals("twice too big: ask for half", 0.5, Video.correctScale(1.0, 34_000_000, 68_000_000.0), 1e-9)
+        assertEquals("close enough", 0.5, Video.correctScale(0.5, 34_000_000, 36_000_000.0), 1e-9)
+        assertEquals("a quiet scene changes nothing", 0.5, Video.correctScale(0.5, 34_000_000, 5_000_000.0), 1e-9)
+    }
+
+    @Test fun bitrates() {
+        assertEquals(10, Video.recommended(1920, 1080, 30, false))
+        assertEquals(40, Video.recommended(3840, 2160, 30, false))
+        assertEquals(15, Video.recommended(1920, 1080, 60, false))
+        assertEquals(7, Video.recommended(1920, 1080, 30, true))
+        assertTrue(Video.recommended(3840, 2160, 240, false) <= Video.MAX_MBIT)
+    }
+
+    @Test fun settingsKeepNewValuesAndRefuseBadOnes() {
+        val s = Settings()
+        s.cam.resolution = "2160p"; s.cam.fps = 60; s.cam.bitrateMbps = 80; s.cam.storage = "card"; s.cam.codec = "hevc"
+        val q = Settings.fromJson(s.toJson()).settings!!.cam
+        assertEquals(listOf("2160p", 60, 80, "card", "hevc"), listOf(q.resolution, q.fps, q.bitrateMbps, q.storage, q.codec))
+        val bad = Settings.fromJson("{\"cam\":{\"resolution\":\"8K\",\"fps\":999,\"storage\":\"/etc\",\"codec\":\"x\"}}").settings!!.cam
+        assertEquals(listOf("1080p", 30, "device", "h264"), listOf(bad.resolution, bad.fps, bad.storage, bad.codec))
+        val v10 = Settings.fromJson("{\"cam\":{\"resolution\":\"720p\",\"fps\":24}}").settings!!.cam // file from 1.0
+        assertEquals(listOf("720p", 24, "device"), listOf(v10.resolution, v10.fps, v10.storage))
     }
 }

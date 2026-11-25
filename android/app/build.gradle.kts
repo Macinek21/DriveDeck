@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.macinek21.drivedeck"
         minSdk = 26 // Android 8.0: the last official version for the Galaxy S7
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 6
+        versionName = "1.4.1"
     }
     if (keys.isNotEmpty()) signingConfigs.create("release") {
         storeFile = file(keys.getProperty("storeFile"))
@@ -43,7 +43,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$camerax")
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-video:$camerax")
-    implementation("androidx.camera:camera-view:$camerax")
     implementation("androidx.camera:camera-effects:$camerax")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

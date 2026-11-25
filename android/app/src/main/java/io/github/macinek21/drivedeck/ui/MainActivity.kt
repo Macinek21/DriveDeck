@@ -1,16 +1,18 @@
 package io.github.macinek21.drivedeck.ui
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -25,7 +27,6 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -49,7 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var area: FrameLayout
     private lateinit var pager: ViewPager2
     private lateinit var previewBox: FrameLayout
-    private lateinit var preview: PreviewView
+    private lateinit var preview: TextureView
     private lateinit var rec: TextView
     private lateinit var strip: TextView
     private lateinit var chip: TextView
@@ -75,7 +76,6 @@ class MainActivity : AppCompatActivity() {
     private fun round(color: Int, stroke: Int = 0) = GradientDrawable().apply { setColor(color); cornerRadius = dp(8).toFloat(); if (stroke != 0) setStroke(dp(1), stroke) }
     private fun label(size: Float, color: Int = Color.WHITE) = TextView(this).apply { textSize = size; setTextColor(color) }
 
-    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         Hub.load(this)
@@ -87,7 +87,15 @@ class MainActivity : AppCompatActivity() {
             override fun onPageSelected(position: Int) { pageChanged() }
         })
         // One live preview laid over the camera tile; it follows swipes and lets touches through.
-        preview = PreviewView(this).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE; scaleType = PreviewView.ScaleType.FILL_CENTER; isClickable = false; setOnTouchListener { _, _ -> false } }
+        preview = TextureView(this).apply {
+            isClickable = false
+            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(t: SurfaceTexture, w: Int, h: Int) = attach()
+                override fun onSurfaceTextureSizeChanged(t: SurfaceTexture, w: Int, h: Int) = attach()
+                override fun onSurfaceTextureDestroyed(t: SurfaceTexture): Boolean { attached?.cam?.gl?.show(null, 0, 0); return true }
+                override fun onSurfaceTextureUpdated(t: SurfaceTexture) {}
+            }
+        }
         rec = label(14f, Palette.alarm).apply { setShadowLayer(4f, 0f, 0f, Color.BLACK); setPadding(dp(10), dp(6), 0, 0) }
         previewBox = FrameLayout(this).apply { visibility = View.INVISIBLE; addView(preview, MATCH_PARENT, MATCH_PARENT); addView(rec, WRAP_CONTENT, WRAP_CONTENT) }
         strip = label(15f).apply { visibility = View.GONE; maxLines = 1; setPadding(dp(12), dp(8), dp(12), dp(8)); setOnClickListener { collapse(); openPanel() } }
@@ -160,7 +168,7 @@ class MainActivity : AppCompatActivity() {
         Hub.onImpact = null
         Hub.visibleKeys = emptySet()
         DriveService.instance?.updateWanted()
-        attached?.cam?.surface = null
+        attached?.cam?.gl?.show(null, 0, 0)
         attached = null
         super.onStop()
     }
@@ -252,14 +260,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun rotation() { DriveService.instance?.cam?.rotation = windowManager.defaultDisplay.rotation }
+    private fun rotation() {
+        val c = DriveService.instance?.cam ?: return
+        c.rotation = windowManager.defaultDisplay.rotation
+        c.gl.rotation = c.rotation
+    }
+
+    /** Shows the running camera's picture in the tile; the camera itself does not notice. */
+    private fun attach() {
+        val st = preview.surfaceTexture ?: return
+        if (visible && preview.isAvailable) attached?.cam?.gl?.show(Surface(st), preview.width, preview.height)
+    }
+
 
     private val tickRunnable = Runnable { tick() }
 
     private fun tick() {
         if (!visible) return
         val s = DriveService.instance
-        if (s !== attached) { attached = s; s?.cam?.surface = preview.surfaceProvider; s?.updateWanted() }
+        if (s !== attached) { attached = s; attach(); s?.updateWanted() }
         rotation()
         pages.forEach { p -> p.tiles.forEach { it.refresh() } }
         val since = s?.cam?.recordingSince

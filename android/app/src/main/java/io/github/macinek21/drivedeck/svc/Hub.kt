@@ -1,6 +1,8 @@
 package io.github.macinek21.drivedeck.svc
 
 import android.content.Context
+import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -25,17 +27,51 @@ enum class Severity { INFO, WARNING, ALARM }
 class Notice(val key: String, val severity: Severity, val title: String, val detail: String, val time: Long = System.currentTimeMillis())
 class Sample(val v: Double, private val at: Long = SystemClock.elapsedRealtime()) { val stale get() = SystemClock.elapsedRealtime() - at > 7000 }
 
-/** Recordings live in Documents/DriveDeck so they are visible over USB and survive uninstalling the app. */
-object Store {
-    val root: File
-        @Suppress("DEPRECATION") get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "DriveDeck")
+/** A place recordings can go: the phone itself or a memory card. */
+class Place(val id: String, val root: File) {
     val loop get() = File(root, "Loop")
     val events get() = File(root, "Events")
-    val io = Executors.newSingleThreadExecutor { Thread(it, "io") }!!
-
+    val label get() = if (id == "card") "Memory card" else "Phone"
     fun ensure(): Boolean = (loop.isDirectory || loop.mkdirs()) && (events.isDirectory || events.mkdirs())
-    fun freeBytes(): Long = try { StatFs(root.path).availableBytes } catch (_: IllegalArgumentException) { 0 }
-    fun totalGb(): Double = try { StatFs(Environment.getExternalStorageDirectory().path).totalBytes / 1e9 } catch (_: IllegalArgumentException) { 64.0 }
+    fun free(): Long = try { StatFs(existing().path).availableBytes } catch (_: IllegalArgumentException) { 0 }
+    fun total(): Long = try { StatFs(existing().path).totalBytes } catch (_: IllegalArgumentException) { 0 }
+    private fun existing(): File { var f = root; while (!f.exists()) f = f.parentFile ?: break; return f }
+}
+
+/**
+ * Phone: Documents/DriveDeck, which survives uninstalling. Memory card: the same folder on Android 11+; older versions only let
+ * apps write to their own folder there (Android/media/<app>/DriveDeck), which Android deletes when the app is uninstalled.
+ */
+object Store {
+    lateinit var app: Context
+    val io = Executors.newSingleThreadExecutor { Thread(it, "io") }!!
+    /** Set while Android is ejecting the card, so nothing new is written to it. */
+    @Volatile var ejecting = false
+
+    val device: Place by lazy {
+        @Suppress("DEPRECATION") Place("device", File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "DriveDeck"))
+    }
+
+    /** The memory card, or null when none is usable right now. */
+    fun card(): Place? {
+        if (ejecting) return null
+        val own = app.getExternalFilesDirs(null).drop(1).firstOrNull {
+            it != null && Environment.getExternalStorageState(it) == Environment.MEDIA_MOUNTED && Environment.isExternalStorageRemovable(it)
+        } ?: return null
+        val volume = own.path.substringBefore("/Android/", "")
+        if (volume.isEmpty()) return null
+        if (Build.VERSION.SDK_INT >= 30) return Place("card", File(volume, "Documents/DriveDeck"))
+        @Suppress("DEPRECATION") val media = app.externalMediaDirs.firstOrNull { it != null && it.path.startsWith("$volume/") } ?: return null
+        return Place("card", File(media, "DriveDeck"))
+    }
+
+    fun places() = listOfNotNull(device, card())
+
+    /** Up to Android 10 files written by an app only show up (with the right size) over USB after they were announced. */
+    fun announce(vararg files: File) {
+        if (Build.VERSION.SDK_INT < 30) MediaScannerConnection.scanFile(app, files.map { it.path }.toTypedArray(), null, null)
+    }
+    fun wanted() = if (Hub.settings.cam.storage == "card") card() else device
 }
 
 /** Diagnostic log: app events and errors only, no positions and no car data. Rotated at 256 KB. */
@@ -43,6 +79,10 @@ object AppLog {
     private val io = Executors.newSingleThreadExecutor { Thread(it, "log") }
     private val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.ROOT)
     private var file: File? = null
+    private var announced = 0L
+
+    /** Makes the complete log visible over USB now. */
+    fun announce() = io.execute { file?.let { Store.announce(it) } }
 
     fun i(m: String) = write("INFO  $m")
     fun e(where: String, t: Throwable) = write("ERROR $where: ${Log.getStackTraceString(t).take(4000)}")
@@ -53,11 +93,12 @@ object AppLog {
         io.execute {
             // A log left by an earlier installation may not be writable any more; use the next free name then.
             for (n in 0..3) {
-                val f = file ?: File(Store.root, if (n == 0) "DriveDeck-log.txt" else "DriveDeck-log-$n.txt")
+                val f = file ?: File(Store.device.root, if (n == 0) "DriveDeck-log.txt" else "DriveDeck-log-$n.txt")
                 try {
-                    if (f.length() > 256 * 1024) f.renameTo(File(Store.root, "DriveDeck-log.old.txt"))
+                    if (f.length() > 256 * 1024) f.renameTo(File(Store.device.root, "DriveDeck-log.old.txt"))
                     f.appendText(fmt.format(at) + " " + line + "\r\n")
                     file = f
+                    if (System.currentTimeMillis() - announced > 10_000 || line.contains("Service stopped")) { announced = System.currentTimeMillis(); Store.announce(f) }
                     return@execute
                 } catch (_: IOException) { file = null }
             }
@@ -93,6 +134,7 @@ object Hub {
     fun load(c: Context) {
         if (loaded) return
         loaded = true
+        Store.app = c.applicationContext
         settings = try { Settings.fromJson(file(c).readFully().toString(Charsets.UTF_8)).settings } catch (_: IOException) { null } ?: Settings()
     }
 

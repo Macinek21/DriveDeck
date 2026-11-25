@@ -15,7 +15,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** One loop clip. Times are epoch ms; size includes the .srt/.gpx next to the video. */
-class Segment(val name: String, val start: Long, var end: Long = 0, var size: Long = 0, var inProgress: Boolean = false)
+class Segment(val name: String, val start: Long, var end: Long = 0, var size: Long = 0, var inProgress: Boolean = false, val root: String = "")
 
 object Names {
     private val F = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.ROOT)

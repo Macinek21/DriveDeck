@@ -16,10 +16,14 @@ import io.github.macinek21.drivedeck.core.LoopPolicy
 import io.github.macinek21.drivedeck.core.Settings
 import io.github.macinek21.drivedeck.core.Stamp
 import io.github.macinek21.drivedeck.core.ValueDef
+import io.github.macinek21.drivedeck.core.Video
+import io.github.macinek21.drivedeck.core.VideoMode
 import io.github.macinek21.drivedeck.svc.AppLog
 import io.github.macinek21.drivedeck.svc.BluetoothTransport
+import io.github.macinek21.drivedeck.svc.CameraModes
 import io.github.macinek21.drivedeck.svc.DriveService
 import io.github.macinek21.drivedeck.svc.Hub
+import io.github.macinek21.drivedeck.svc.Place
 import io.github.macinek21.drivedeck.svc.Store
 import kotlin.math.floor
 
@@ -28,6 +32,7 @@ class SettingsActivity : FormActivity() {
     private lateinit var original: String
     private var meter: TextView? = null
     private var peak = 0.0
+    private var modes: List<VideoMode>? = null
     private val tick = object : Runnable {
         override fun run() {
             peak = maxOf(peak, Hub.gForce)
@@ -50,6 +55,7 @@ class SettingsActivity : FormActivity() {
         barButton("Save") { save() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) { override fun handleOnBackPressed() = leave() })
         build()
+        CameraModes.load(this) { if (!isDestroyed) { modes = it; build() } }
     }
 
     override fun onSaveInstanceState(o: Bundle) {
@@ -81,6 +87,38 @@ class SettingsActivity : FormActivity() {
         return if (h < 1) "${(h * 60).toInt()} min" else "%.1f h".format(h)
     }
 
+    private fun current() = modes?.let { Video.pick(it, s.cam.resolution, s.cam.fps) }
+
+    /** Only modes the camera really offers are listed; changing one also sets a fitting bitrate. */
+    private fun video(f: Form) {
+        val c = s.cam
+        val list = modes
+        fun recommended() = current()?.let { Video.recommended(it.width, it.height, it.fps, c.codec == "hevc") } ?: 10
+        val now = current()
+        if (list == null) f.note("Asking the camera for its video modes…")
+        else if (list.isEmpty() || now == null) f.note("The camera did not report its video modes; 1080p 30 fps is used.")
+        else {
+            f.choice("Resolution", list.distinctBy { it.res }.map { it.res to Video.label(it) }, now.res) {
+                c.resolution = it
+                current()?.let { m -> c.fps = m.fps }
+                c.bitrateMbps = recommended()
+                build()
+            }
+            f.choice("Frame rate", list.filter { it.res == now.res }.map { m ->
+                m.fps to "${m.fps} fps" + if (m.highSpeed) " (high speed, no burned-in stamp)" else if (m.legacy) " (Samsung interface, experimental, no burned-in stamp)" else if (m.minFps < m.fps) " (down to ${m.minFps} in the dark)" else ""
+            }.mapIndexed { i, x ->
+                val m = list.filter { it.res == now.res }[i]
+                val real = CameraModes.realFps(m)
+                if (!m.special || real == 0) x else x.first to "${m.fps} fps (recorded at $real fps, no burned-in stamp)"
+            }, now.fps) { c.resolution = now.res; c.fps = it; c.bitrateMbps = recommended(); build() }
+            if (now.legacy && CameraModes.realFps(now) == 0) f.note("The phone's camera has this mode, but Samsung does not promise it to other apps. If it refuses, DriveDeck says so, records the closest mode that works and removes it from this list.")
+            if (now.highSpeed) f.note("High speed needs a lot of light and makes the phone warmer. Speed and position are saved in the .srt file only.")
+            else if (now.res == "2160p" || now.fps >= 50) f.note("Demanding mode: the phone may overheat on long drives.")
+        }
+        if (CameraModes.hevc) f.choice("Compression", listOf("h264" to "H.264 (plays everywhere)", "hevc" to "H.265 (smaller files)"), c.codec) { c.codec = it; c.bitrateMbps = recommended(); build() }
+        f.slider("Video bitrate", 2.0, Video.MAX_MBIT.toDouble(), 1.0, c.bitrateMbps.toDouble(), { "%.0f Mbit/s (recommended %d)".format(it, recommended()) }) { c.bitrateMbps = it.toInt() }
+    }
+
     private fun build(): Unit = rebuild {
         val f = Form(this, body)
         val c = s.cam
@@ -89,17 +127,24 @@ class SettingsActivity : FormActivity() {
         f.header("Dashcam")
         f.switch("Dashcam enabled", c.enabled) { c.enabled = it }
         f.switch("Start recording when the app opens", c.autoStart) { c.autoStart = it }
-        f.choice("Resolution", listOf("1080p" to "1080p", "720p" to "720p (cooler phone, smaller files)"), c.resolution) { c.resolution = it }
-        f.choice("Frame rate", listOf(30 to "30 fps", 24 to "24 fps"), c.fps) { c.fps = it }
-        f.slider("Video bitrate", 2.0, 30.0, 1.0, c.bitrateMbps.toDouble(), { "%.0f Mbit/s".format(it) }) { c.bitrateMbps = it.toInt() }
+        video(f)
         f.switch("Record sound (microphone)", c.audio) { c.audio = it; if (it) askMic.launch(Manifest.permission.RECORD_AUDIO) }
         f.choice("Clip length", listOf(30 to "30 s", 60 to "1 min", 120 to "2 min", 180 to "3 min", 300 to "5 min"), c.segmentSeconds) { c.segmentSeconds = it }
 
         f.header("Storage")
+        val card = Store.card()
+        fun gb(b: Long) = "%.1f GB".format(b / 1e9)
+        fun info(p: Place) = "${p.label} (${gb(p.free())} free of ${gb(p.total())})"
+        f.choice("Save footage to", listOf("device" to info(Store.device), "card" to (card?.let(::info) ?: "Memory card (none inserted)")), c.storage) { c.storage = it; build() }
+        val place = (if (c.storage == "card") card else null) ?: Store.device
+        if (c.storage == "card") {
+            f.note("If the card is missing, recording continues on the phone. Use a fast card (U3/V30) for 4K, and eject it in Android settings before pulling it out.")
+            if (Build.VERSION.SDK_INT < 30) f.note("⚠ On this Android version the card folder belongs to the app: Android deletes it, including saved incidents, when DriveDeck is uninstalled.")
+        }
         f.switch("Unlimited (use all space except the reserve)", c.unlimited) { c.unlimited = it; build() }
-        f.slider("Maximum for loop recording", 1.0, maxOf(8.0, floor(Store.totalGb())), 1.0, c.capGb, { "%.0f GB (about %s)".format(it, hours(it)) }, !c.unlimited) { c.capGb = it }
-        f.slider("Always keep free on the phone", 0.5, 8.0, 0.5, c.reserveGb, { "%.1f GB".format(it) }) { c.reserveGb = it }
-        f.note("At the limit the oldest loop clips are overwritten. Saved incidents are never deleted automatically. Files are in Documents/DriveDeck.")
+        f.slider("Maximum for loop recording", 1.0, maxOf(2.0, floor(place.total() / 1e9)), 1.0, c.capGb, { "%.0f GB (about %s)".format(it, hours(it)) }, !c.unlimited) { c.capGb = it }
+        f.slider("Always keep free on the phone" + if (c.storage == "card") " (not used for the card)" else "", 0.5, 8.0, 0.5, c.reserveGb, { "%.1f GB".format(it) }) { c.reserveGb = it }
+        f.note("At the limit the oldest loop clips are overwritten. Saved incidents are never deleted automatically. The limit counts phone and card together. Folder: ${place.root.path}")
 
         f.header("GPS and speed in the video")
         f.switch("Use GPS", c.gps) { c.gps = it }

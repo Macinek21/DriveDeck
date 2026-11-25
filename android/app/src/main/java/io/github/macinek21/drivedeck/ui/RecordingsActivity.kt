@@ -69,16 +69,18 @@ class RecordingsActivity : FormActivity() {
         val wantLoop = loop
         Store.io.execute {
             val active = DriveService.instance?.cam?.recordingSince
-            val groups = if (wantLoop) Store.loop.listFiles().orEmpty().filter { it.extension == "mp4" && Names.parse(it.nameWithoutExtension) != null && it.length() > 0 }
-                .sortedByDescending { it.name }.take(300).map { f -> Group(Store.loop, time(f.nameWithoutExtension), listOf(f), f.length()) }
-            else Store.events.listFiles().orEmpty().filter { it.isDirectory && Names.parse(it.name) != null }.sortedByDescending { it.name }.map { d ->
+            val places = Store.places()
+            val groups = if (wantLoop) places.flatMap { p -> p.loop.listFiles().orEmpty().toList() }.filter { it.extension == "mp4" && Names.parse(it.nameWithoutExtension) != null && it.length() > 0 }
+                .sortedByDescending { it.name }.take(300).map { f -> Group(f.parentFile!!, time(f.nameWithoutExtension) + where(f), listOf(f), f.length()) }
+            else places.flatMap { p -> p.events.listFiles().orEmpty().toList() }.filter { it.isDirectory && Names.parse(it.name) != null }.sortedByDescending { it.name }.map { d ->
                 val all = d.listFiles().orEmpty()
-                Group(d, (if ("_manual" in d.name) "Saved manually – " else "Impact – ") + time(d.name), all.filter { it.extension == "mp4" }.sortedBy { it.name }, all.sumOf { it.length() })
+                Group(d, (if ("_manual" in d.name) "Saved manually – " else "Impact – ") + time(d.name) + where(d), all.filter { it.extension == "mp4" }.sortedBy { it.name }, all.sumOf { it.length() })
             }
             runOnUiThread { if (!isDestroyed && wantLoop == loop) show(groups, active != null) }
         }
     }
 
+    private fun where(f: File) = if (f.path.startsWith(Store.device.root.path)) "" else "  (memory card)"
     private fun time(n: String) = Names.parse(n)?.let { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM).format(Date(it)) } ?: n
     private fun size(b: Long) = if (b > 1_073_741_824) "%.1f GB".format(b / 1073741824.0) else "${b / 1_048_576} MB"
 
@@ -145,7 +147,7 @@ class RecordingsActivity : FormActivity() {
             Store.io.execute {
                 if (loop) g.clips.forEach { c -> listOf("mp4", "srt", "gpx").forEach { File(c.parentFile, c.nameWithoutExtension + "." + it).delete() } }
                 else { g.dir.listFiles().orEmpty().filter { it.isFile }.forEach { it.delete() }; g.dir.delete() }
-                runOnUiThread { if (!isDestroyed) load() }
+                runOnUiThread { DriveService.instance?.cam?.rescan(); if (!isDestroyed) load() }
             }
         }.show()
     }

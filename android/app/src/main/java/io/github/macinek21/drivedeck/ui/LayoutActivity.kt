@@ -1,5 +1,6 @@
 package io.github.macinek21.drivedeck.ui
 
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -7,8 +8,10 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import io.github.macinek21.drivedeck.core.DashPage
@@ -71,8 +74,8 @@ class LayoutActivity : FormActivity() {
         val p = work.pages[index]
         f.choice("Page", work.pages.mapIndexed { i, x -> i to "${i + 1}. ${x.name}" }, index) { index = it; selected = null; build() }
         val row = LinearLayout(this)
-        val add = android.widget.Button(this).apply { text = "Add page"; isEnabled = work.pages.size < Settings.MAX_PAGES; setOnClickListener { work.pages.add(DashPage("Page ${work.pages.size + 1}")); index = work.pages.lastIndex; selected = null; build() } }
-        val del = android.widget.Button(this).apply { text = "Delete page"; isEnabled = work.pages.size > 1; setOnClickListener { work.pages.removeAt(index); selected = null; build() } }
+        val add = Button(this).apply { text = "Add page"; isEnabled = work.pages.size < Settings.MAX_PAGES; setOnClickListener { work.pages.add(DashPage("Page ${work.pages.size + 1}")); index = work.pages.lastIndex; selected = null; build() } }
+        val del = Button(this).apply { text = "Delete page"; isEnabled = work.pages.size > 1; setOnClickListener { work.pages.removeAt(index); selected = null; build() } }
         row.addView(add)
         row.addView(del)
         f.view(row)
@@ -80,14 +83,49 @@ class LayoutActivity : FormActivity() {
         f.choice("Show when the phone is", listOf("any" to "Any orientation", "landscape" to "Landscape", "portrait" to "Portrait"), p.orientation) { p.orientation = it; build() }
         f.choice("Rows", (1..6).map { it to "$it" }, p.rows) { p.rows = it; clamp(p); build() }
         f.choice("Columns", (1..6).map { it to "$it" }, p.cols) { p.cols = it; clamp(p); build() }
-        f.note("Tap an empty cell to add a tile, or a tile to edit it.")
+        tileBar(f, p)
         val portrait = p.orientation == "portrait"
         body.addView(GridPreview(p), LinearLayout.LayoutParams(if (portrait) dp(240) else MATCH_PARENT, dp(if (portrait) 400 else 240)))
         p.tiles.firstOrNull { it.id == selected }?.let { edit(f, p, it) }
     }
 
+    private fun title(t: Tile) = (if (t.kind.needsValue) t.label.ifEmpty { Pids.all(work.obd.custom).firstOrNull { it.key == t.key }?.short ?: "?" } + " – " else "") + t.kind.label
+
+    private fun overlaps(a: Tile, b: Tile) = a !== b && a.row < b.row + b.rows && b.row < a.row + a.rows && a.col < b.col + b.cols && b.col < a.col + a.cols
+
+    /** Right above the grid: choose a tile (also one hidden under another) and delete it without scrolling. */
+    private fun tileBar(f: Form, p: DashPage) {
+        val hidden = p.tiles.filterIndexed { i, t -> p.tiles.drop(i + 1).any { overlaps(t, it) } }
+        f.note("Tap an empty cell (+) to add a tile, a tile to edit it. Press and hold a tile to delete it.")
+        if (hidden.isNotEmpty()) f.note("⚠ Covered by another tile: " + hidden.joinToString { title(it) } + ". Choose it in this list to move or delete it.")
+        f.choice("Selected tile", listOf<Pair<String?, String>>(null to "(none)") + p.tiles.map {
+            it.id to title(it) + ", row ${it.row + 1}, column ${it.col + 1}" + if (it in hidden) " (covered)" else ""
+        }, selected) { selected = it; build() }
+        val t = p.tiles.firstOrNull { it.id == selected } ?: return
+        val row = LinearLayout(this)
+        row.addView(Button(this).apply {
+            text = "Delete this tile"
+            setTextColor(Color.WHITE)
+            backgroundTintList = ColorStateList.valueOf(Palette.alarm)
+            setOnClickListener { delete(p, t) }
+        })
+        row.addView(Button(this).apply { text = "Done"; setOnClickListener { selected = null; build() } })
+        f.view(row)
+    }
+
+    private fun delete(p: DashPage, t: Tile) {
+        p.tiles.remove(t)
+        if (selected == t.id) selected = null
+        build()
+        Toast.makeText(this, "Deleted: ${title(t)}. Press Save to keep the change.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun askDelete(p: DashPage, t: Tile) {
+        AlertDialog.Builder(this).setTitle(title(t)).setItems(arrayOf("Edit", "Delete")) { _, i -> if (i == 1) delete(p, t) else { selected = t.id; build() } }.show()
+    }
+
     private fun edit(f: Form, p: DashPage, t: Tile) {
-        f.header("Selected tile")
+        f.header("Tile: ${title(t)}")
         f.choice("Type", Kind.entries.map { it to it.label }, t.kind) { t.kind = it; if (it.needsValue && t.key.isEmpty()) t.key = Pids.GPS_SPEED; build() }
         if (t.kind.needsValue) f.choice("Shows", Pids.all(work.obd.custom).map { it.key to it.name + if (it.unit.isEmpty()) "" else " (${it.unit})" }, t.key) { t.key = it; build() }
         f.choice("Row", (1..p.rows).map { it - 1 to "$it" }, t.row) { t.row = it; clamp(p); build() }
@@ -106,7 +144,7 @@ class LayoutActivity : FormActivity() {
                 f.number("Scale maximum", t.max) { t.max = it }
             }
         }
-        f.button("Delete tile") { p.tiles.remove(t); selected = null; build() }
+        f.button("Delete tile") { delete(p, t) }
         f.button("Done") { selected = null; build() }
     }
 
@@ -116,12 +154,13 @@ class LayoutActivity : FormActivity() {
         init {
             setBackgroundColor(Color.BLACK)
             val names = Pids.all(work.obd.custom).associate { it.key to it.short }
-            fun put(text: String, stroke: Int, fill: Int, at: IntArray, click: () -> Unit) {
+            fun put(text: String, stroke: Int, fill: Int, at: IntArray, hold: (() -> Unit)? = null, click: () -> Unit) {
                 val v = TextView(context).apply {
                     this.text = text; gravity = Gravity.CENTER; textSize = 12f; maxLines = 3
-                    setTextColor(if (text == "+") Palette.track else Color.WHITE)
+                    setTextColor(if (text == "+") Palette.dim else Color.WHITE)
                     background = GradientDrawable().apply { setColor(fill); setStroke(dp(if (stroke == Color.WHITE) 3 else 1), stroke); cornerRadius = dp(4).toFloat() }
                     setOnClickListener { click() }
+                    if (hold != null) setOnLongClickListener { hold(); true }
                     contentDescription = if (text == "+") "Empty cell row ${at[0] + 1} column ${at[1] + 1}" else text
                 }
                 slots += v to at
@@ -132,7 +171,7 @@ class LayoutActivity : FormActivity() {
             }
             val accent = Palette.parse(work.ui.accent, Palette.blue)
             for (t in p.tiles) put((if (t.kind.needsValue) t.label.ifEmpty { names[t.key] ?: "?" } + "\n" else "") + t.kind.label,
-                if (t.id == selected) Color.WHITE else Palette.parse(t.color, accent), Palette.tile, intArrayOf(t.row, t.col, t.rows, t.cols)) { selected = t.id; build() }
+                if (t.id == selected) Color.WHITE else Palette.parse(t.color, accent), Palette.tile, intArrayOf(t.row, t.col, t.rows, t.cols), { askDelete(p, t) }) { selected = t.id; build() }
         }
 
         override fun onMeasure(ws: Int, hs: Int) {

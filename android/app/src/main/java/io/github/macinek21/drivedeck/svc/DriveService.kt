@@ -53,6 +53,7 @@ class DriveService : LifecycleService() {
     private var gpsOn = false
     private var started = false
     private var closing = false
+    private val state by lazy { getSharedPreferences("state", MODE_PRIVATE) }
     private val alarmed = HashMap<String, Boolean>()
     private val wake by lazy { getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DriveDeck:drive").apply { setReferenceCounted(false) } }
     private val sensors by lazy { getSystemService(SensorManager::class.java) }
@@ -67,9 +68,13 @@ class DriveService : LifecycleService() {
         super.onCreate()
         Hub.load(this)
         cam = Dashcam(this, this, ::freshFix, ::freshSpeed)
-        cam.onChange = ::updateNotification
+        cam.onChange = { state.edit().putBoolean("recording", cam.isWanted).apply(); updateNotification() }
         instance = this
         registerReceiver(battery, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        registerReceiver(cardEvents, IntentFilter().apply {
+            for (a in listOf(Intent.ACTION_MEDIA_EJECT, Intent.ACTION_MEDIA_MOUNTED, Intent.ACTION_MEDIA_UNMOUNTED, Intent.ACTION_MEDIA_REMOVED, Intent.ACTION_MEDIA_BAD_REMOVAL)) addAction(a)
+            addDataScheme("file")
+        })
         if (Build.VERSION.SDK_INT >= 29) getSystemService(PowerManager::class.java)?.let { pm ->
             thermal = PowerManager.OnThermalStatusChangedListener { st ->
                 AppLog.i("Thermal status $st")
@@ -85,9 +90,11 @@ class DriveService : LifecycleService() {
         when (intent?.action) {
             ACTION_STOP -> shutdown()
             ACTION_SAVE -> saveIncident()
-            else -> begin()
+            else -> begin(intent == null)
         }
-        return START_NOT_STICKY // Android does not let a restarted background service use the camera
+        // Android 8-10 may restart us after a kill (e.g. when an ejected memory card closes our file) and the camera still works then.
+        // From Android 11 on a service restarted in the background cannot use the camera.
+        return if (Build.VERSION.SDK_INT < 30 && !closing) START_STICKY else START_NOT_STICKY
     }
 
     /** Foreground types must match the permissions that are granted right now. */
@@ -105,14 +112,15 @@ class DriveService : LifecycleService() {
 
     /** The wake lock lasts as long as the service: with the screen off the phone must keep recording and watching for impacts. */
     @SuppressLint("WakelockTimeout")
-    private fun begin() {
+    private fun begin(restarted: Boolean) {
         wake.acquire()
         startSensors()
         startObd()
         if (!started) {
             started = true
             AppLog.i("Service started, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
-            if (Hub.settings.cam.enabled && Hub.settings.cam.autoStart) cam.start() else cam.openPreview()
+            if (restarted) AppLog.i("Restarted by Android")
+            if (Hub.settings.cam.enabled && if (restarted) state.getBoolean("recording", false) else Hub.settings.cam.autoStart) cam.start() else cam.openPreview()
         } else if (cam.isWanted) cam.start()
         updateNotification()
     }
@@ -153,6 +161,8 @@ class DriveService : LifecycleService() {
         stopSensors()
         if (wake.isHeld) wake.release()
         runCatching { unregisterReceiver(battery) }
+        runCatching { unregisterReceiver(cardEvents) }
+        Store.ejecting = false
         if (Build.VERSION.SDK_INT >= 29) thermal?.let { getSystemService(PowerManager::class.java)?.removeThermalStatusListener(it) }
         if (!closing) cam.close {}
         Hub.obdConnected = false
@@ -186,7 +196,7 @@ class DriveService : LifecycleService() {
             val hit = d.feed(e.values[0] / G, e.values[1] / G, e.values[2] / G, e.timestamp / 1_000_000)
             Hub.gForce = d.lastG
             Hub.values[Pids.GFORCE] = Sample(d.lastG)
-            if (hit && Hub.settings.cam.impact) {
+            if (hit && Hub.settings.cam.impact && cam.recordingSince != null) { // handling the phone while not recording is no accident
                 val g = d.lastG
                 AppLog.i("Impact detected")
                 cam.trigger("impact", g)
@@ -232,6 +242,16 @@ class DriveService : LifecycleService() {
             val t = i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0
             if (t >= 50) cam.pauseForHeat(true)
             else if (t in 1.0..45.0 && (Build.VERSION.SDK_INT < 29 || (getSystemService(PowerManager::class.java)?.currentThermalStatus ?: 0) <= PowerManager.THERMAL_STATUS_MODERATE)) cam.pauseForHeat(false)
+        }
+    }
+
+    /** Ejecting the card: close the clip at once and continue on the phone. A card that comes back is used again from the next clip. */
+    private val cardEvents = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            AppLog.i("Storage event ${i.action?.substringAfterLast('.')}")
+            Store.ejecting = i.action == Intent.ACTION_MEDIA_EJECT
+            if (Store.ejecting && Hub.settings.cam.storage == "card") cam.rollover()
+            cam.rescan()
         }
     }
 

@@ -26,6 +26,8 @@ class CamSettings {
     var resolution = "1080p"
     var fps = 30
     var bitrateMbps = 10
+    var codec = "h264"
+    var storage = "device"
     var audio = false
     var segmentSeconds = 60
     var unlimited = false
@@ -80,7 +82,7 @@ class Settings {
         .put("version", 1)
         .put("cam", JSONObject().apply {
             put("enabled", cam.enabled); put("autoStart", cam.autoStart); put("resolution", cam.resolution); put("fps", cam.fps)
-            put("bitrateMbps", cam.bitrateMbps); put("audio", cam.audio); put("segmentSeconds", cam.segmentSeconds)
+            put("bitrateMbps", cam.bitrateMbps); put("codec", cam.codec); put("storage", cam.storage); put("audio", cam.audio); put("segmentSeconds", cam.segmentSeconds)
             put("unlimited", cam.unlimited); num("capGb", cam.capGb); num("reserveGb", cam.reserveGb); put("gps", cam.gps)
             put("stamp", cam.stamp); put("stampDate", cam.stampDate); put("stampSpeed", cam.stampSpeed); put("stampCoords", cam.stampCoords)
             put("label", cam.label); put("srt", cam.srt); put("gpx", cam.gpx); put("impact", cam.impact); put("sensitivity", cam.sensitivity)
@@ -117,9 +119,11 @@ class Settings {
         fun clamp(v: Double, lo: Double, hi: Double, fb: Double) = if (v.isNaN() || v.isInfinite()) fb else v.coerceIn(lo, hi)
         fun fin(v: Double?) = v?.takeIf { !it.isNaN() && !it.isInfinite() }
         cam.apply {
-            resolution = oneOf(resolution, "1080p", "720p", "1080p")
-            fps = if (fps == 24) 24 else 30
-            bitrateMbps = bitrateMbps.coerceIn(2, 30)
+            resolution = if (resolution in Video.RES) resolution else "1080p"
+            fps = if (fps in Video.FPS) fps else 30
+            bitrateMbps = bitrateMbps.coerceIn(2, Video.MAX_MBIT)
+            codec = oneOf(codec, "h264", "h264", "hevc")
+            storage = oneOf(storage, "device", "device", "card")
             segmentSeconds = segmentSeconds.coerceIn(30, 300)
             capGb = clamp(capGb, 1.0, 1024.0, 8.0)
             reserveGb = clamp(reserveGb, 0.5, 16.0, 1.5)
@@ -208,7 +212,7 @@ class Settings {
                 o.optJSONObject("cam")?.let { j ->
                     r.cam.apply {
                         enabled = j.optBoolean("enabled", enabled); autoStart = j.optBoolean("autoStart", autoStart); resolution = j.s("resolution", resolution)
-                        fps = j.optInt("fps", fps); bitrateMbps = j.optInt("bitrateMbps", bitrateMbps); audio = j.optBoolean("audio", audio)
+                        fps = j.optInt("fps", fps); bitrateMbps = j.optInt("bitrateMbps", bitrateMbps); codec = j.s("codec", codec); storage = j.s("storage", storage); audio = j.optBoolean("audio", audio)
                         segmentSeconds = j.optInt("segmentSeconds", segmentSeconds); unlimited = j.optBoolean("unlimited", unlimited)
                         capGb = j.d("capGb") ?: capGb; reserveGb = j.d("reserveGb") ?: reserveGb; gps = j.optBoolean("gps", gps)
                         stamp = j.optBoolean("stamp", stamp); stampDate = j.optBoolean("stampDate", stampDate); stampSpeed = j.optBoolean("stampSpeed", stampSpeed)
