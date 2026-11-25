@@ -56,10 +56,15 @@ namespace DriveDeck.Core
     [DataContract]
     public sealed class DashcamSettings
     {
+        [DataMember] public bool UseFrontCamera { get; set; }
+        /// <summary>"auto" = keeps focusing, "far" = fixed on the distance.</summary>
+        [DataMember] public string Focus { get; set; }
+        /// <summary>Lets the camera slow down for a brighter picture in the dark.</summary>
+        [DataMember] public bool SlowInDark { get; set; }
         [DataMember] public bool Enabled { get; set; }
         [DataMember] public bool AutoStart { get; set; }
-        [DataMember] public string Resolution { get; set; }       // "720p" | "1080p"
-        [DataMember] public int FrameRate { get; set; }           // 24 | 30
+        [DataMember] public string Resolution { get; set; }       // see VideoModes.Resolutions
+        [DataMember] public int FrameRate { get; set; }           // see VideoModes.FrameRates
         [DataMember] public int BitrateKbps { get; set; }
         [DataMember] public bool RecordAudio { get; set; }
         [DataMember] public int SegmentSeconds { get; set; }
@@ -86,7 +91,7 @@ namespace DriveDeck.Core
         {
             return new DashcamSettings
             {
-                Enabled = true, AutoStart = true, Resolution = "720p", FrameRate = 30, BitrateKbps = 8000, RecordAudio = false,
+                Focus = "auto", Enabled = true, AutoStart = true, Resolution = "1080p", FrameRate = 30, BitrateKbps = 20000, RecordAudio = false,
                 SegmentSeconds = 60, UnlimitedStorage = false, StorageCapGb = 8, ReserveFreeGb = 1.5,
                 GpsEnabled = true, BurnInStamp = true, StampDateTime = true, StampSpeed = true, StampCoordinates = false, StampLabel = "",
                 SubtitleTrack = true, GpxTrack = true,
@@ -133,7 +138,7 @@ namespace DriveDeck.Core
     [DataContract]
     public sealed class AppSettings
     {
-        public const int CurrentVersion = 1;
+        public const int CurrentVersion = 2;
         public const int MaxPages = 8;
         public const int MaxWidgetsPerPage = 24;
         public const int MaxCustomValues = 40;
@@ -206,9 +211,15 @@ namespace DriveDeck.Core
             var d = DashcamSettings.Defaults();
             if (Dashcam == null) { Dashcam = d; notes.Add("Dashcam settings reset"); }
             var c = Dashcam;
-            c.Resolution = OneOf(c.Resolution, "720p", "720p", "1080p");
-            c.FrameRate = c.FrameRate == 24 ? 24 : 30;
-            c.BitrateKbps = Clamp(c.BitrateKbps, 2000, 20000);
+            c.Focus = OneOf(c.Focus, "auto", "auto", "far");
+            c.Resolution = OneOf(c.Resolution, "1080p", VideoModes.Resolutions);
+            c.FrameRate = VideoModes.FrameRates.Contains(c.FrameRate) ? c.FrameRate : 30;
+            c.BitrateKbps = Clamp(c.BitrateKbps, 2000, VideoModes.MaxMbit * 1000);
+            if (Version < 2) // earlier versions recommended too little
+            {
+                if (c.Resolution == "720p" && c.BitrateKbps < 11000) c.BitrateKbps = 11000;
+                if (c.Resolution == "1080p" && c.BitrateKbps < 15000) c.BitrateKbps = 20000;
+            }
             c.SegmentSeconds = Clamp(c.SegmentSeconds, 30, 300);
             c.StorageCapGb = Clamp(c.StorageCapGb, 1, 256, d.StorageCapGb);
             c.ReserveFreeGb = Clamp(c.ReserveFreeGb, 0.5, 8, d.ReserveFreeGb);

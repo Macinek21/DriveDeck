@@ -34,15 +34,19 @@ namespace DriveDeck.Core
         private List<ValueDefinition> _wanted = new List<ValueDefinition>();
         private CancellationTokenSource _cts;
         private Task _loop;
-        private readonly Dictionary<string, double> _last = new Dictionary<string, double>();
-        private List<Dtc> _lastDtcs = new List<Dtc>();
+        private sealed class Stamped { public double Value; public long At; }
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private readonly Dictionary<string, Stamped> _last = new Dictionary<string, Stamped>();
+        private List<Dtc> _lastDtcs; // null = not read yet
 
         public event Action<string, double> ValueUpdated;
         public event Action<string> ValueUnsupported;
         public event Action<ObdState, string> StateChanged;
-        public event Action<IReadOnlyList<Dtc>, IReadOnlyList<Dtc>> DtcsChanged; // (all current, newly appeared)
+        public event Action<IReadOnlyList<Dtc>, IReadOnlyList<Dtc>> DtcsChanged; // (all current, newly appeared); also fires for the first successful read
 
         public ObdState State { get; private set; }
+        /// <summary>The fault memory has been read successfully at least once.</summary>
+        public bool DtcsRead { get { return _lastDtcs != null; } }
         public ObdClient Client { get; private set; }
 
         public ObdPoller(Func<CancellationToken, Task<IObdTransport>> connect, ObdPollerOptions options)
@@ -163,6 +167,8 @@ namespace DriveDeck.Core
                     else r = await client.ReadAsync(def, ct).ConfigureAwait(false);
 
                     if (r.Ok) { consecutiveErrors = 0; Publish(def.Key, r.Value); }
+                    else if (r.Unsupported && r.Error == "No data" && !await client.IsCarAnsweringAsync(ct).ConfigureAwait(false))
+                        throw new ObdException("The car did not answer. Is the ignition on?"); // not a reason to give up on this value
                     else if (r.Unsupported) { unsupported.Add(def.Key); var h = ValueUnsupported; if (h != null) h(def.Key); }
                     else if (++consecutiveErrors > 12) throw new ObdException("Too many errors from adapter");
                 }
@@ -171,18 +177,21 @@ namespace DriveDeck.Core
                 // Fault codes: on schedule, and immediately when the check-engine lamp switches on.
                 if (doSlow)
                 {
-                    bool? mil = null;
-                    try { mil = await client.ReadMilAsync(ct).ConfigureAwait(false); } catch (TimeoutException) { }
+                    bool? mil = await client.ReadMilAsync(ct).ConfigureAwait(false);
                     bool milTurnedOn = mil == true && lastMil != true;
-                    lastMil = mil;
+                    if (mil.HasValue) lastMil = mil;
                     if (milTurnedOn || cycleStart - lastDtc >= _opt.DtcIntervalSeconds * 1000L)
                     {
                         lastDtc = cycleStart;
                         var dtcs = await client.ReadDtcsAsync(_opt.ReadPermanentDtcs, ct).ConfigureAwait(false);
-                        var fresh = dtcs.Where(d => !_lastDtcs.Contains(d)).ToList();
-                        bool changed = fresh.Count > 0 || dtcs.Count != _lastDtcs.Count;
-                        _lastDtcs = dtcs;
-                        if (changed) { var h = DtcsChanged; if (h != null) h(dtcs, fresh); }
+                        if (dtcs != null) // a failed read changes nothing
+                        {
+                            var before = _lastDtcs ?? new List<Dtc>();
+                            var fresh = dtcs.Where(d => !before.Contains(d)).ToList();
+                            bool changed = _lastDtcs == null || fresh.Count > 0 || dtcs.Count != before.Count;
+                            _lastDtcs = dtcs;
+                            if (changed) { var h = DtcsChanged; if (h != null) h(dtcs, fresh); }
+                        }
                     }
                 }
 
@@ -193,21 +202,22 @@ namespace DriveDeck.Core
 
         private void Publish(string key, double value)
         {
-            lock (_last) _last[key] = value;
+            lock (_last) _last[key] = new Stamped { Value = value, At = _clock.ElapsedMilliseconds };
             var h = ValueUpdated; if (h != null) h(key, value);
         }
 
-        private double Last(string key)
+        private double Last(string key, long maxAgeMs)
         {
-            double v;
-            lock (_last) return _last.TryGetValue(key, out v) ? v : double.NaN;
+            Stamped v;
+            lock (_last) return _last.TryGetValue(key, out v) && _clock.ElapsedMilliseconds - v.At <= maxAgeMs ? v.Value : double.NaN;
         }
 
+        /// <summary>Derived values use only recent inputs, so an old reading never looks current.</summary>
         private void PublishDerived()
         {
-            double map = Last("obd:0B"), baro = Last("obd:33");
+            double map = Last("obd:0B", 3000), baro = Last("obd:33", 600000);
             if (!double.IsNaN(map)) Publish(PidCatalog.BoostKey, DerivedValues.BoostBar(map, double.IsNaN(baro) ? 101.3 : baro));
-            double c = DerivedValues.ConsumptionPer100Km(Last("obd:0D"), Last("obd:5E"), Last("obd:10"), _opt.FuelType);
+            double c = DerivedValues.ConsumptionPer100Km(Last("obd:0D", 3000), Last("obd:5E", 4000), Last("obd:10", 3000), _opt.FuelType);
             if (!double.IsNaN(c)) Publish(PidCatalog.ConsumptionKey, c);
         }
     }

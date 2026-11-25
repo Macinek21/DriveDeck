@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +11,7 @@ using Windows.Foundation.Collections;
 using Windows.Foundation.Metadata;
 using Windows.Graphics.Display;
 using Windows.Media.Capture;
+using Windows.Media.Devices;
 using Windows.Media.Effects;
 using Windows.Media.MediaProperties;
 using Windows.Storage;
@@ -52,6 +54,19 @@ namespace DriveDeck.App.Services
         private bool _overheated;
         private volatile bool _captureFailed;
         private int _failuresWithEffect;
+        private VideoMode _mode;
+        private MediaCapture _focusing;
+        private CameraModes _modes = CameraModes.For(false);
+        private bool _front;
+        private bool _safeMode;          // after repeated failures: Full HD 30 or less until settings change
+        private int _modeFailures;
+        private bool _measured;
+
+        /// <summary>The mode being recorded now; null when the camera is off.</summary>
+        public bool IsFront { get { return _front; } }
+        public VideoMode CurrentMode { get { return _mc != null ? _mode : null; } }
+        /// <summary>Set when the camera should be re-created at once instead of at the next watchdog check.</summary>
+        public volatile bool RestartSoon;
 
         /// <summary>Set when the burned-in stamp effect is not usable on this phone; speed then goes to the .srt track only.</summary>
         public static bool EffectDisabled { get; private set; }
@@ -83,6 +98,7 @@ namespace DriveDeck.App.Services
         public async Task<bool> InitializeAsync(DashcamSettings settings)
         {
             _s = settings;
+            bool setting = false; // a failure now is about the mode, not about the camera being busy
             try
             {
                 var videos = KnownFolders.VideosLibrary;
@@ -92,36 +108,45 @@ namespace DriveDeck.App.Services
                 await ScanLoopFolderAsync();
 
                 var cams = await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture);
-                var cam = cams.FirstOrDefault(c => c.EnclosureLocation != null && c.EnclosureLocation.Panel == Windows.Devices.Enumeration.Panel.Back)
+                var want = settings.UseFrontCamera ? Windows.Devices.Enumeration.Panel.Front : Windows.Devices.Enumeration.Panel.Back;
+                var cam = cams.FirstOrDefault(c => c.EnclosureLocation != null && c.EnclosureLocation.Panel == want)
                           ?? cams.FirstOrDefault();
                 if (cam == null) { Status("No camera found", true); return false; }
 
                 AppLog.Info("Camera: " + cam.Name + ", " + cams.Count + " camera(s)");
+                _front = settings.UseFrontCamera && cam.EnclosureLocation != null && cam.EnclosureLocation.Panel == Windows.Devices.Enumeration.Panel.Front;
+                _modes = CameraModes.For(_front);
                 _captureFailed = false;
+                RestartSoon = false;
+                _measured = false;
+                await _modes.LearnAsync(cam.Id);
+                _mode = Choose(_modes.Usable());
+                if (_mode == null) { Status("The camera reports no usable video format", true); return false; }
                 _mc = new MediaCapture();
-                await _mc.InitializeAsync(new MediaCaptureInitializationSettings
-                {
-                    VideoDeviceId = cam.Id,
-                    StreamingCaptureMode = settings.RecordAudio ? StreamingCaptureMode.AudioAndVideo : StreamingCaptureMode.Video,
-                });
+                await _mc.InitializeAsync(CameraModes.Settings(cam.Id, settings.RecordAudio, _mode, CameraModes.Profiles(cam.Id)));
+                // The front camera has fewer modes, so a different one is expected there.
+                if (!_safeMode && !_front && (_mode.Resolution != settings.Resolution || _mode.Fps != settings.FrameRate))
+                    Status("Not available: " + settings.Resolution + " " + settings.FrameRate + " fps. Recording " + _mode.Resolution + " " + _mode.Fps + " fps.", true);
                 _mc.Failed += OnCaptureFailed;
                 _mc.RecordLimitationExceeded += s => { AppLog.Info("RecordLimitationExceeded"); RequestRollover(); };
                 if (ApiInformation.IsEventPresent("Windows.Media.Capture.MediaCapture", "ThermalStatusChanged"))
                     _mc.ThermalStatusChanged += OnThermal;
 
+                setting = true;
                 await ConfigureStreamAsync();
+                setting = false;
                 _profile = BuildProfile();
-                AppLog.Info("Profile: " + _profile.Video.Width + "x" + _profile.Video.Height + " @" + _profile.Video.FrameRate.Numerator + "/" +
+                AppLog.Info("Profile: " + _mode + " " + _profile.Video.Width + "x" + _profile.Video.Height + " @" + _profile.Video.FrameRate.Numerator + "/" +
                             _profile.Video.FrameRate.Denominator + " " + _profile.Video.Bitrate / 1000 + " kbit/s, audio " + (_profile.Audio != null));
                 _effectAdded = false;
-                if (settings.BurnInStamp && !EffectDisabled)
+                if (settings.BurnInStamp && !EffectDisabled && _modes.Stamp(_mode) != StampState.Off)
                 {
                     try
                     {
                         _fx["text"] = "";
-                        await _mc.AddVideoEffectAsync(new VideoEffectDefinition("DriveDeck.Effects.OverlayVideoEffect", _fx), MediaStreamType.VideoRecord);
+                        await _mc.AddVideoEffectAsync(new VideoEffectDefinition("DriveDeck.Effects." + CameraModes.StampEffect, _fx), MediaStreamType.VideoRecord);
                         _effectAdded = true;
-                        AppLog.Info("Burn-in stamp effect added");
+                        AppLog.Info("Burn-in stamp added: " + CameraModes.StampEffect);
                     }
                     catch (Exception ex)
                     {
@@ -143,6 +168,7 @@ namespace DriveDeck.App.Services
             catch (Exception ex)
             {
                 AppLog.Error("InitializeAsync", ex);
+                if (setting || (_mode != null && _mode.Special)) ModeFailed(ex.Message);
                 Status("Camera could not start: " + ex.Message, true);
                 await DisposeCaptureAsync();
                 return false;
@@ -160,8 +186,9 @@ namespace DriveDeck.App.Services
         {
             AppLog.Info("MediaCapture.Failed code 0x" + e.Code.ToString("X8") + ": " + e.Message + (_effectAdded ? " (stamp effect on)" : ""));
             _captureFailed = true;
+            ModeFailed(e.Message);
             // A failure with the GPU stamp effect active is retried once with it; a second one turns the effect off.
-            if (_effectAdded && ++_failuresWithEffect >= 2) DisableEffect();
+            if (_effectAdded && (_mode == null || !_mode.Demanding) && ++_failuresWithEffect >= 2) DisableEffect();
             Status("Camera error: " + e.Message + " – restarting the camera", true);
             RequestRollover();
         }
@@ -177,25 +204,169 @@ namespace DriveDeck.App.Services
 
         public bool IsOverheated { get { return _overheated; } }
 
+        private VideoMode Choose(List<VideoMode> modes)
+        {
+            return _safeMode ? VideoModes.Pick(modes.Where(m => !m.Demanding), "1080p", 30)
+                             : VideoModes.Pick(modes, _s.Resolution, _s.FrameRate);
+        }
+
         private async Task ConfigureStreamAsync()
         {
-            uint wantH = _s.Resolution == "1080p" ? 1080u : 720u;
-            var props = _mc.VideoDeviceController.GetAvailableMediaStreamProperties(MediaStreamType.VideoRecord)
-                .OfType<VideoEncodingProperties>()
-                .Where(p => p.Height == wantH && p.FrameRate.Denominator != 0)
-                .OrderBy(p => Math.Abs((double)p.FrameRate.Numerator / p.FrameRate.Denominator - _s.FrameRate))
-                .FirstOrDefault();
-            if (props != null) await _mc.VideoDeviceController.SetMediaStreamPropertiesAsync(MediaStreamType.VideoRecord, props);
+            var formats = CameraModes.Formats(_mc).ToList();
+            // 720p is scaled down from the Full HD picture: the camera's own 720p stream is visibly softer.
+            var fullHd = new VideoMode { Resolution = "1080p", Fps = _mode.Fps };
+            var props = _mode.Resolution == "720p" ? formats.FirstOrDefault(p => CameraModes.Matches(p, fullHd)) : null;
+            if (_mode.Source == VideoMode.Negotiated) return; // the recorder sets the stream
+            if (_mode.Source == VideoMode.Forced)
+            {
+                props = VideoEncodingProperties.CreateUncompressed("NV12", (uint)_mode.Width, (uint)_mode.Height);
+                props.FrameRate.Numerator = (uint)_mode.Fps;
+                props.FrameRate.Denominator = 1;
+            }
+            if (props == null && _mode.Source != VideoMode.Profile)
+                props = formats.Where(p => CameraModes.Matches(p, _mode)).OrderBy(p => p.Subtype == "NV12" ? 0 : 1).FirstOrDefault();
+            if (props == null) return; // set by the profile
+            await _mc.VideoDeviceController.SetMediaStreamPropertiesAsync(MediaStreamType.VideoRecord, props);
+            AppLog.Info("Camera stream: " + props.Width + "x" + props.Height);
+            try
+            {
+                var ep = _mc.VideoDeviceController.ExposurePriorityVideoControl;
+                AppLog.Info("Slower in the dark: supported " + ep.Supported + (ep.Supported ? ", was " + ep.Enabled : ""));
+                if (ep.Supported) ep.Enabled = _s.SlowInDark;
+            }
+            catch (Exception ex) { AppLog.Error("ExposurePriority", ex); }
+        }
+
+        /// <summary>Sets the focus. The preview must be running. Called again by a tap on the camera picture.</summary>
+        public async Task FocusAsync()
+        {
+            var mc = _mc;
+            if (mc == null || _focusing == mc) return;
+            _focusing = mc;
+            try
+            {
+                var fc = mc.VideoDeviceController.FocusControl;
+                if (!fc.Supported) { AppLog.Info("Focus: this camera has none to set"); return; }
+                var modes = fc.SupportedFocusModes.ToList();
+                var ranges = fc.SupportedFocusRanges.ToList();
+                var distances = fc.SupportedFocusDistances.ToList();
+                AppLog.Info("Focus: modes " + string.Join("/", modes) + ", ranges " + string.Join("/", ranges) + ", distances " + string.Join("/", distances) + ", now " + fc.Mode + " " + fc.FocusState);
+                bool infinity = modes.Contains(FocusMode.Manual) && distances.Contains(ManualFocusDistance.Infinity);
+                if (_s.Focus != "far" || !infinity)
+                {
+                    foreach (var mode in new[] { FocusMode.Continuous, FocusMode.Auto, FocusMode.Single })
+                        foreach (var range in new[] { AutoFocusRange.Normal, AutoFocusRange.FullRange })
+                        {
+                            if (!modes.Contains(mode) || !ranges.Contains(range)) continue;
+                            try
+                            {
+                                fc.Configure(new FocusSettings { Mode = mode, AutoFocusRange = range, WaitForFocus = false, DisableDriverFallback = false });
+                                await fc.FocusAsync();
+                            }
+                            catch (Exception ex) { AppLog.Info("Focus " + mode + "/" + range + ": " + ex.Message); continue; }
+                            for (int i = 0; i < 12 && _mc == mc && fc.FocusState != MediaCaptureFocusState.Focused && fc.FocusState != MediaCaptureFocusState.Failed; i++) await Task.Delay(200);
+                            if (_mc != mc) return;
+                            AppLog.Info("Focus " + mode + "/" + range + ": " + fc.FocusState);
+                            if (fc.FocusState == MediaCaptureFocusState.Focused || (mode == FocusMode.Continuous && fc.FocusState == MediaCaptureFocusState.Searching)) return;
+                        }
+                    if (!infinity) return;
+                    AppLog.Info("Focus did not succeed, set to the distance");
+                }
+                fc.Configure(new FocusSettings { Mode = FocusMode.Manual, Distance = ManualFocusDistance.Infinity, DisableDriverFallback = false });
+                await fc.FocusAsync();
+                if (_mc == mc) AppLog.Info("Focus set to " + fc.Mode + ", state " + fc.FocusState);
+            }
+            catch (Exception ex) { AppLog.Error("Focus", ex); }
+            finally { if (_focusing == mc) _focusing = null; }
         }
 
         private MediaEncodingProfile BuildProfile()
         {
-            var p = MediaEncodingProfile.CreateMp4(_s.Resolution == "1080p" ? VideoEncodingQuality.HD1080p : VideoEncodingQuality.HD720p);
+            var p = MediaEncodingProfile.CreateMp4(_mode.Height <= 720 ? VideoEncodingQuality.HD720p : VideoEncodingQuality.HD1080p);
+            if (_mode.Demanding || _mode.Height < 720)
+            {
+                // The presets carry an encoder level that is too low for these; a bare description lets the encoder choose.
+                p.Video = VideoEncodingProperties.CreateH264();
+                p.Video.Width = (uint)_mode.Width;
+                p.Video.Height = (uint)_mode.Height;
+                p.Video.PixelAspectRatio.Numerator = 1;
+                p.Video.PixelAspectRatio.Denominator = 1;
+            }
             p.Video.Bitrate = (uint)_s.BitrateKbps * 1000;
-            p.Video.FrameRate.Numerator = (uint)_s.FrameRate;
+            p.Video.FrameRate.Numerator = (uint)_mode.Fps;
             p.Video.FrameRate.Denominator = 1;
             if (!_s.RecordAudio) p.Audio = null;
             return p;
+        }
+
+        /// <summary>
+        /// Takes over changed settings. Returns true when the camera has to be restarted for them; everything else applies at once.
+        /// </summary>
+        public bool ApplySettings(DashcamSettings n)
+        {
+            var o = _s;
+            bool camera = o == null || o.Enabled != n.Enabled || o.Resolution != n.Resolution || o.FrameRate != n.FrameRate ||
+                          o.BitrateKbps != n.BitrateKbps || o.RecordAudio != n.RecordAudio || o.BurnInStamp != n.BurnInStamp ||
+                          o.UseFrontCamera != n.UseFrontCamera || o.Focus != n.Focus || o.SlowInDark != n.SlowInDark;
+            if (o != null) _s = n;
+            if (camera) { _safeMode = false; _modeFailures = 0; _failuresWithEffect = 0; EffectDisabled = false; }
+            return camera;
+        }
+
+        /// <summary>
+        /// A mode beyond Full HD 30 failed. First it is tried without the stamp; then, if it never worked, it is struck off the list,
+        /// otherwise the app falls back to Full HD 30 after three failures in a row.
+        /// </summary>
+        private void ModeFailed(string why)
+        {
+            var m = _mode;
+            if (m == null || !m.Demanding || _safeMode) return;
+            AppLog.Info("Mode " + m + " failed (" + why + "), stamp " + _effectAdded);
+            RestartSoon = true;
+            if (_effectAdded) { _modes.SetStamp(m, StampState.Off); return; }
+            if (_modes.RealFps(m) <= 0)
+            {
+                _modes.Refuse(m);
+                Status(m.Resolution + " " + m.Fps + " fps does not work for this app (" + why + "). Recording the closest mode that works.", true);
+            }
+            else if (++_modeFailures >= 3)
+            {
+                _safeMode = true;
+                Status(m.Resolution + " " + m.Fps + " fps does not work now. Recording at most Full HD 30 fps until a video setting is changed.", true);
+            }
+        }
+
+        /// <summary>Is the first good clip of this session what the mode promises? Reads only the clip's index.</summary>
+        private async Task CheckClipAsync(StorageFile file, double seconds)
+        {
+            var m = _mode;
+            if (_measured || m == null || seconds < 4) return;
+            _measured = true;
+            Mp4Info info;
+            using (var s = await file.OpenStreamForReadAsync()) info = Mp4Info.Read(s);
+            if (info == null || info.Fps <= 0) { AppLog.Info("Mode " + m + ": the clip could not be measured"); return; }
+            double fps = info.Fps;
+            AppLog.Info(string.Format(CultureInfo.InvariantCulture, "Mode {0}: file has {1:0.0} fps, {2}x{3}, {4:0.0} of {5:0.0} s, stamp {6}",
+                m, fps, info.Width, info.Height, info.Seconds, seconds, _effectAdded));
+            _modeFailures = 0;
+            double before = _modes.RealFps(m);
+            if (fps < m.Fps * 0.5 && m.Demanding && !_effectAdded) { ModeFailed("it delivered only " + Math.Round(fps) + " fps"); return; }
+            if (fps < m.Fps * 0.85 && _effectAdded && _modes.Stamp(m) == StampState.Untested)
+            {
+                // Too slow with the stamp: compare without it.
+                _modes.SaveRealFps(m, fps);
+                _modes.SetStamp(m, StampState.Off);
+                Status("The burned-in stamp slows " + m.Resolution + " " + m.Fps + " fps down to " + Math.Round(fps) + " fps, trying without it. Speed stays in the subtitle file.", false);
+                RestartSoon = true;
+                _captureFailed = true;
+                RequestRollover();
+                return;
+            }
+            if (!_effectAdded && _modes.Stamp(m) == StampState.Off && before > 0 && fps < before * 1.25)
+                _modes.SetStamp(m, StampState.Keep); // it was not the stamp (darkness, for example): bring it back next time
+            _modes.SaveRealFps(m, fps);
+            if (_effectAdded && _modes.Stamp(m) == StampState.Untested && fps >= m.Fps * 0.85) _modes.SetStamp(m, StampState.Keep);
+            if (fps < m.Fps * 0.9) Status("The phone manages about " + Math.Round(fps) + " fps in this mode.", false);
         }
 
         /// <summary>Back camera on a portrait-native phone: the sensor is aligned with landscape.</summary>
@@ -203,9 +374,9 @@ namespace DriveDeck.App.Services
         {
             switch (o)
             {
-                case DisplayOrientations.Portrait: _rotation = VideoRotation.Clockwise90Degrees; break;
+                case DisplayOrientations.Portrait: _rotation = _front ? VideoRotation.Clockwise270Degrees : VideoRotation.Clockwise90Degrees; break;
                 case DisplayOrientations.LandscapeFlipped: _rotation = VideoRotation.Clockwise180Degrees; break;
-                case DisplayOrientations.PortraitFlipped: _rotation = VideoRotation.Clockwise270Degrees; break;
+                case DisplayOrientations.PortraitFlipped: _rotation = _front ? VideoRotation.Clockwise90Degrees : VideoRotation.Clockwise270Degrees; break;
                 default: _rotation = VideoRotation.None; break;
             }
             try { if (_mc != null) _mc.SetPreviewRotation(_rotation); } catch { }
@@ -230,6 +401,12 @@ namespace DriveDeck.App.Services
                 }
                 ulong size = 0;
                 DateTime end = start;
+                if (DateTime.Now - start > TimeSpan.FromMinutes(1) && (await video.GetBasicPropertiesAsync()).Size == 0)
+                {
+                    foreach (var f in g) // an empty clip, left when the app was closed at a bad moment
+                        try { await f.DeleteAsync(StorageDeleteOption.PermanentDelete); } catch { }
+                    continue;
+                }
                 foreach (var f in g)
                 {
                     BasicProperties bp = await f.GetBasicPropertiesAsync();
@@ -297,7 +474,12 @@ namespace DriveDeck.App.Services
             ulong free = await FreeBytesAsync();
             ulong? cap = _s.UnlimitedStorage ? (ulong?)null : Gb(_s.StorageCapGb);
             List<SegmentInfo> doomed;
-            lock (_lock) doomed = LoopStoragePolicy.SelectForDeletion(_segments, cap, free, Gb(_s.ReserveFreeGb), incoming);
+            lock (_lock)
+            {
+                // Footage that an incident may still need is never overwritten.
+                DateTime keepFrom = (_pending.Count > 0 ? _pending.Min(p => p.Time) : DateTime.Now).AddSeconds(-_s.PreEventSeconds);
+                doomed = LoopStoragePolicy.SelectForDeletion(_segments, cap, free, Gb(_s.ReserveFreeGb), incoming, keepFrom);
+            }
             foreach (var seg in doomed)
             {
                 foreach (var ext in SidecarExtensions)
@@ -323,6 +505,7 @@ namespace DriveDeck.App.Services
         private async Task LoopAsync(CancellationToken ct)
         {
             Status("Recording", false);
+            DateTime? lastEnd = null;
             try
             {
                 while (!ct.IsCancellationRequested)
@@ -334,6 +517,9 @@ namespace DriveDeck.App.Services
                     _mc.SetRecordRotation(_rotation);
                     var rec = await _mc.PrepareLowLagRecordToStorageFileAsync(_profile, file);
                     await rec.StartAsync();
+                    start = DateTime.Now; // the subtitle clock starts with the video
+                    if (!lastEnd.HasValue) { var _ = FocusAsync(); } // starting to record may reset it
+                    if (lastEnd.HasValue) AppLog.Info("Gap since previous clip: " + (int)(start - lastEnd.Value).TotalMilliseconds + " ms");
                     SegmentStart = start;
                     _rollover = false;
 
@@ -372,21 +558,23 @@ namespace DriveDeck.App.Services
                     }
                     finally
                     {
+                        lastEnd = DateTime.Now;
                         try { await rec.FinishAsync(); }
                         catch (Exception ex) { AppLog.Error("FinishAsync", ex); Status("Could not finish segment: " + ex.Message, true); }
                         SegmentStart = null;
                     }
 
-                    if (cueText != null && _s.SubtitleTrack) srt.AddCue(cueStart, DateTime.Now, cueText);
+                    if (cueText != null && _s.SubtitleTrack) srt.AddCue(cueStart, lastEnd.Value, cueText);
                     var videoFile = await _loop.TryGetItemAsync(file.Name) as StorageFile;
                     ulong videoSize = videoFile != null ? (await videoFile.GetBasicPropertiesAsync()).Size : 0;
-                    AppLog.Info("Segment " + baseName + " finished: " + (DateTime.Now - start).TotalSeconds.ToString("0.0") + " s, " + videoSize / 1024 + " KB");
+                    AppLog.Info("Segment " + baseName + " finished: " + (lastEnd.Value - start).TotalSeconds.ToString("0.0") + " s, " + videoSize / 1024 + " KB");
                     if (videoSize == 0)
                     {
                         // Nothing usable was recorded: drop the empty file, keep no sidecars, and let the camera restart.
                         lock (_lock) _segments.Remove(seg);
                         try { if (videoFile != null) await videoFile.DeleteAsync(StorageDeleteOption.PermanentDelete); } catch { }
                         _captureFailed = true;
+                        if (!ct.IsCancellationRequested || (lastEnd.Value - start).TotalSeconds > 4) ModeFailed("no video arrived");
                         Status("The camera produced no video. Restarting the camera.", true);
                         break;
                     }
@@ -395,17 +583,20 @@ namespace DriveDeck.App.Services
                         size += await WriteSidecarAsync(baseName + ".srt", srt.ToString());
                     if (_s.GpxTrack && track.Count > 0)
                         size += await WriteSidecarAsync(baseName + ".gpx", GpxBuilder.Build(baseName, track));
-                    seg.End = DateTime.Now;
+                    seg.End = lastEnd;
                     seg.SizeBytes = size;
                     seg.InProgress = false;
 
+                    try { await CheckClipAsync(videoFile, (lastEnd.Value - start).TotalSeconds); } catch (Exception ex) { AppLog.Error("CheckClip", ex); }
                     await ProcessEventsAsync(ct.IsCancellationRequested);
+                    if (_captureFailed) break; // re-created by the watchdog
                 }
             }
             catch (Exception ex)
             {
                 AppLog.Error("LoopAsync", ex);
                 _captureFailed = true;
+                ModeFailed(ex.Message);
                 Status("Recording stopped: " + ex.Message, true);
             }
             finally

@@ -24,6 +24,8 @@ namespace DriveDeck.Effects
         private IPropertySet _config;
         private CanvasTextFormat _format;
         private float _formatForHeight;
+        private CanvasTextLayout _layout;
+        private string _layoutText;
 
         public bool IsReadOnly { get { return false; } }
         public MediaMemoryTypes SupportedMemoryTypes { get { return MediaMemoryTypes.Gpu; } }
@@ -43,6 +45,7 @@ namespace DriveDeck.Effects
 
         public void SetEncodingProperties(VideoEncodingProperties encodingProperties, IDirect3DDevice device)
         {
+            DropLayout();
             if (_device != null) _device.Dispose();
             _device = CanvasDevice.CreateFromDirect3D11Device(device);
         }
@@ -65,7 +68,8 @@ namespace DriveDeck.Effects
             using (var output = CanvasRenderTarget.CreateFromDirect3D11Surface(_device, context.OutputFrame.Direct3DSurface))
             using (var ds = output.CreateDrawingSession())
             {
-                ds.DrawImage(input);
+                // Plain copy: no blending of a whole opaque frame.
+                ds.DrawImage(input, 0, 0, input.Bounds, 1, CanvasImageInterpolation.NearestNeighbor, CanvasComposite.Copy);
                 string text = CurrentText();
                 if (string.IsNullOrEmpty(text)) return;
 
@@ -81,20 +85,34 @@ namespace DriveDeck.Effects
                         WordWrapping = CanvasWordWrapping.NoWrap
                     };
                     _formatForHeight = h;
+                    DropLayout();
                 }
-                using (var layout = new CanvasTextLayout(ds, text, _format, (float)output.Size.Width, h))
+                if (_layout == null || _layoutText != text) // laid out once per text, not once per frame
                 {
-                    var b = layout.LayoutBounds;
+                    DropLayout();
+                    _layout = new CanvasTextLayout(_device, text, _format, (float)output.Size.Width, h);
+                    _layoutText = text;
+                }
+                {
+                    var b = _layout.LayoutBounds;
                     float pad = _format.FontSize * 0.35f;
                     float x = pad * 2, y = h - (float)b.Height - pad * 3;
                     ds.FillRectangle(new Rect(x - pad, y - pad * 0.5, b.Width + pad * 2, b.Height + pad), Color.FromArgb(140, 0, 0, 0));
-                    ds.DrawTextLayout(layout, x, y, Colors.White);
+                    ds.DrawTextLayout(_layout, x, y, Colors.White);
                 }
             }
         }
 
+        private void DropLayout()
+        {
+            if (_layout != null) _layout.Dispose();
+            _layout = null;
+            _layoutText = null;
+        }
+
         public void Close(MediaEffectClosedReason reason)
         {
+            DropLayout();
             if (_format != null) { _format.Dispose(); _format = null; }
             if (_device != null) { _device.Dispose(); _device = null; }
         }

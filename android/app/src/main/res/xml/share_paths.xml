@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-path name="recordings" path="Documents/DriveDeck/" />
+    <!-- Memory cards (/storage/XXXX-XXXX/...): only single clips the user shares are ever granted. -->
+    <root-path name="card" path="storage/" />
+</paths>

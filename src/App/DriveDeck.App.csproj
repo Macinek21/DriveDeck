@@ -53,6 +53,8 @@
     <Compile Include="RecordingsPage.xaml.cs"><DependentUpon>RecordingsPage.xaml</DependentUpon></Compile>
     <Compile Include="Services\AppServices.cs" />
     <Compile Include="Services\BluetoothElmTransport.cs" />
+    <Compile Include="Services\CameraLab.cs" />
+    <Compile Include="Services\CameraModes.cs" />
     <Compile Include="Services\DashcamService.cs" />
     <Compile Include="Widgets\WidgetView.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

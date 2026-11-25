@@ -5,7 +5,7 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   IgnorableNamespaces="uap mp">
 
-  <Identity Name="DriveDeck.Lumia" Publisher="CN=DriveDeck Dev" Version="1.0.1.0" />
+  <Identity Name="DriveDeck.Lumia" Publisher="CN=DriveDeck Dev" Version="1.3.0.0" />
   <mp:PhoneIdentity PhoneProductId="3c1e9a7e-5b2d-4f8a-9e6c-1d2b3a4f5e6d" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
   <Properties>

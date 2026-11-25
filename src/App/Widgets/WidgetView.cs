@@ -20,8 +20,8 @@ namespace DriveDeck.App.Widgets
     {
         public static readonly Color WarnColor = Color.FromArgb(255, 255, 185, 0);
         public static readonly Color AlarmColor = Color.FromArgb(255, 232, 17, 35);
-        public static readonly Color TileColor = Color.FromArgb(255, 20, 24, 30);
-        public static readonly Color DimText = Color.FromArgb(255, 150, 160, 170);
+        public static readonly Color TileColor = Color.FromArgb(255, 22, 28, 36);
+        public static readonly Color DimText = Color.FromArgb(255, 140, 153, 168);
         private const int GraphPoints = 120;
 
         public WidgetConfig Config { get; private set; }
@@ -32,6 +32,14 @@ namespace DriveDeck.App.Widgets
 
         private readonly Color _accent;
         private TextBlock _label, _value, _unit, _rec;
+        private static readonly Color LineColor = Color.FromArgb(255, 38, 48, 60);
+        private static readonly Color TrackColor = Color.FromArgb(255, 36, 45, 56);
+        private readonly Border _frame;
+        private readonly SolidColorBrush _normalFill;
+        private readonly SolidColorBrush _warnFill = new SolidColorBrush(WarnColor), _alarmFill = new SolidColorBrush(AlarmColor), _white = new SolidColorBrush(Colors.White);
+        private Polygon _area;
+        private StackPanel _status;
+        private AlertLevel _shownAlert = AlertLevel.Normal;
         private Path _arcBg, _arcVal;
         private Rectangle _barFill;
         private Grid _barTrack;
@@ -49,9 +57,11 @@ namespace DriveDeck.App.Widgets
             _max = !double.IsNaN(cfg.Max) ? cfg.Max : def != null ? def.Max : 100;
             if (_max <= _min) _max = _min + 1;
 
+            _normalFill = new SolidColorBrush(_accent);
             Margin = new Thickness(3);
-            var frame = new Border { Background = new SolidColorBrush(TileColor), CornerRadius = new CornerRadius(6) };
-            Children.Add(frame);
+            _frame = new Border { CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(1) };
+            Children.Add(_frame);
+            Paint(AlertLevel.Normal);
 
             switch (cfg.Kind)
             {
@@ -63,6 +73,21 @@ namespace DriveDeck.App.Widgets
                 case WidgetKind.Status: BuildStatus(); break;
                 default: BuildNumber(); break;
             }
+        }
+
+        /// <summary>The whole card takes the alert colour, so a warning is seen without reading the number.</summary>
+        private void Paint(AlertLevel a)
+        {
+            _shownAlert = a;
+            if (a == AlertLevel.Normal)
+            {
+                _frame.Background = new SolidColorBrush(TileColor);
+                _frame.BorderBrush = new SolidColorBrush(LineColor);
+                return;
+            }
+            var c = a == AlertLevel.Alarm ? AlarmColor : WarnColor;
+            _frame.BorderBrush = new SolidColorBrush(c);
+            _frame.Background = new SolidColorBrush(Color.FromArgb(255, (byte)(TileColor.R + (c.R - TileColor.R) / 5), (byte)(TileColor.G + (c.G - TileColor.G) / 5), (byte)(TileColor.B + (c.B - TileColor.B) / 5)));
         }
 
         public static Color Parse(string hex, Color fallback)
@@ -91,7 +116,7 @@ namespace DriveDeck.App.Widgets
         {
             return new TextBlock
             {
-                Text = LabelText, FontSize = 14, Foreground = new SolidColorBrush(DimText), Margin = new Thickness(8, 4, 8, 0),
+                Text = LabelText, FontSize = 13, Foreground = new SolidColorBrush(DimText), Margin = new Thickness(12, 7, 10, 0),
                 HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, TextTrimming = TextTrimming.CharacterEllipsis
             };
         }
@@ -99,14 +124,14 @@ namespace DriveDeck.App.Widgets
         private void BuildNumber()
         {
             _label = MakeLabel();
-            _value = new TextBlock { Text = "--", FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Colors.White) };
-            var vb = new Viewbox { Child = _value, Margin = new Thickness(10, 20, 10, 14), StretchDirection = StretchDirection.Both };
+            _value = new TextBlock { Text = "--", FontSize = 40, FontWeight = FontWeights.SemiLight, Foreground = _white };
             _unit = new TextBlock
             {
                 Text = Definition != null ? Definition.Unit : "", FontSize = 13, Foreground = new SolidColorBrush(DimText),
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 8, 3)
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 12, 6)
             };
-            Children.Add(vb); Children.Add(_label); Children.Add(_unit);
+            Children.Add(new Viewbox { Child = _value, Margin = new Thickness(12, 24, 12, 20), StretchDirection = StretchDirection.Both });
+            Children.Add(_label); Children.Add(_unit);
         }
 
         private void BuildText(string label, string value)
@@ -118,11 +143,11 @@ namespace DriveDeck.App.Widgets
 
         private void BuildGauge()
         {
-            _arcBg = new Path { Stroke = new SolidColorBrush(Color.FromArgb(255, 45, 52, 60)), StrokeThickness = 10, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
-            _arcVal = new Path { Stroke = new SolidColorBrush(_accent), StrokeThickness = 10, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
+            _arcBg = new Path { Stroke = new SolidColorBrush(TrackColor), StrokeThickness = 10, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
+            _arcVal = new Path { Stroke = _normalFill, StrokeThickness = 10, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
             Children.Add(_arcBg); Children.Add(_arcVal);
             _label = MakeLabel();
-            _value = new TextBlock { Text = "--", FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Colors.White) };
+            _value = new TextBlock { Text = "--", FontWeight = FontWeights.SemiLight, Foreground = _white };
             var vb = new Viewbox { Child = _value, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             Children.Add(vb); Children.Add(_label);
             _unit = new TextBlock { Text = Definition != null ? Definition.Unit : "", FontSize = 13, Foreground = new SolidColorBrush(DimText), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 6) };
@@ -164,8 +189,9 @@ namespace DriveDeck.App.Widgets
         private void BuildBar()
         {
             BuildNumber();
-            _barTrack = new Grid { Height = 8, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(8, 0, 8, 22), Background = new SolidColorBrush(Color.FromArgb(255, 45, 52, 60)) };
-            _barFill = new Rectangle { Fill = new SolidColorBrush(_accent), HorizontalAlignment = HorizontalAlignment.Left, Width = 0 };
+            _barTrack = new Grid { Height = 6, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(12, 0, 12, 10), Background = new SolidColorBrush(TrackColor) };
+            _barFill = new Rectangle { Fill = _normalFill, RadiusX = 3, RadiusY = 3, HorizontalAlignment = HorizontalAlignment.Left, Width = 0 };
+            _unit.Margin = new Thickness(0, 0, 12, 18);
             _barTrack.Children.Add(_barFill);
             Children.Add(_barTrack);
         }
@@ -173,19 +199,25 @@ namespace DriveDeck.App.Widgets
         private void BuildGraph()
         {
             _label = MakeLabel();
-            _line = new Polyline { Stroke = new SolidColorBrush(_accent), StrokeThickness = 2, Margin = new Thickness(8, 26, 8, 8) };
-            _value = new TextBlock { Text = "--", FontSize = 22, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Colors.White), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 8, 0) };
+            var fade = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
+            fade.GradientStops.Add(new GradientStop { Color = Color.FromArgb(110, _accent.R, _accent.G, _accent.B), Offset = 0 });
+            fade.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, _accent.R, _accent.G, _accent.B), Offset = 1 });
+            _area = new Polygon { Fill = fade, Margin = new Thickness(8, 32, 8, 8) };
+            _line = new Polyline { Stroke = _normalFill, StrokeThickness = 2.5, StrokeLineJoin = PenLineJoin.Round, Margin = new Thickness(8, 32, 8, 8) };
+            Children.Add(_area);
+            _value = new TextBlock { Text = "--", FontSize = 22, FontWeight = FontWeights.SemiLight, Foreground = _white, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 12, 0) };
             Children.Add(_line); Children.Add(_label); Children.Add(_value);
         }
 
         private void BuildCamera()
         {
-            CameraHost = new Grid { Margin = new Thickness(2) };
+            CameraHost = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+            CameraHost.Tapped += async (s, e) => await AppHub.Dashcam.FocusAsync();
             Children.Add(CameraHost);
             _rec = new TextBlock
             {
                 Text = "", FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(AlarmColor),
-                Margin = new Thickness(8, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
             };
             Children.Add(_rec);
         }
@@ -194,8 +226,25 @@ namespace DriveDeck.App.Widgets
         {
             _label = MakeLabel();
             _label.Text = "Status";
-            _value = new TextBlock { FontSize = 13, Foreground = new SolidColorBrush(Colors.White), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8, 22, 6, 4), LineHeight = 17 };
-            Children.Add(_value); Children.Add(_label);
+            _status = new StackPanel { Margin = new Thickness(12, 26, 8, 6) };
+            for (int i = 0; i < 5; i++)
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 2) };
+                row.Children.Add(new Ellipse { Width = 7, Height = 7, Margin = new Thickness(0, 1, 7, 0), VerticalAlignment = VerticalAlignment.Center });
+                row.Children.Add(new TextBlock { FontSize = 13, Foreground = _white, TextTrimming = TextTrimming.CharacterEllipsis });
+                _status.Children.Add(row);
+            }
+            Children.Add(_status); Children.Add(_label);
+        }
+
+        private void StatusRow(int i, string text, Color dot)
+        {
+            var row = (StackPanel)_status.Children[i];
+            row.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+            var e = (Ellipse)row.Children[0];
+            var b = e.Fill as SolidColorBrush;
+            if (b == null) e.Fill = new SolidColorBrush(dot); else b.Color = dot;
+            ((TextBlock)row.Children[1]).Text = text ?? "";
         }
 
         // ---------------- Refresh ----------------
@@ -206,8 +255,7 @@ namespace DriveDeck.App.Widgets
             {
                 case WidgetKind.Camera:
                     {
-                        var st = AppHub.Dashcam.SegmentStart;
-                        _rec.Text = st.HasValue ? (now.Second % 2 == 0 ? "● REC " : "○ REC ") + (now - st.Value).ToString(@"m\:ss") : (AppHub.Dashcam.IsOverheated ? "HOT – paused" : "not recording");
+                        _rec.Text = AppHub.Dashcam.Capture == null ? (AppHub.Dashcam.IsOverheated ? "HOT – paused" : "Camera off") : "";
                         return;
                     }
                 case WidgetKind.Clock:
@@ -215,24 +263,24 @@ namespace DriveDeck.App.Widgets
                     _unit.Text = now.ToString("ddd d.M.");
                     return;
                 case WidgetKind.Status:
-                    _value.Text = StatusText(now);
+                    ShowStatus();
                     return;
             }
 
             if (Definition == null) return;
             var sample = AppHub.Values.Get(Definition.Key);
             bool unsupported = AppHub.Values.IsUnsupported(Definition.Key);
-            bool stale = sample == null || (now - sample.Time).TotalSeconds > 5;
+            bool stale = sample == null || (now - sample.Time).TotalSeconds > ValueHub.StaleSeconds;
             double v = sample != null && !stale ? sample.Value : double.NaN;
             LastValue = v;
 
             string text = unsupported ? "n/a" : double.IsNaN(v) ? "--" : v.ToString("F" + Definition.Decimals, CultureInfo.CurrentCulture);
             Alert = Evaluate(v);
-            var color = Alert == AlertLevel.Alarm ? AlarmColor : Alert == AlertLevel.Warn ? WarnColor : Colors.White;
-            if (_value != null) { _value.Text = text; _value.Foreground = new SolidColorBrush(color); }
+            if (_shownAlert != Alert) Paint(Alert);
+            if (_value != null) { _value.Text = text; _value.Foreground = Alert == AlertLevel.Alarm ? _alarmFill : Alert == AlertLevel.Warn ? _warnFill : _white; }
             Opacity = stale && !unsupported ? 0.55 : 1;
 
-            var fill = new SolidColorBrush(Alert == AlertLevel.Normal ? _accent : color);
+            var fill = Alert == AlertLevel.Alarm ? _alarmFill : Alert == AlertLevel.Warn ? _warnFill : _normalFill;
             if (_arcVal != null) { _arcVal.Stroke = fill; UpdateGaugeArc(); }
             if (_barFill != null)
             {
@@ -244,7 +292,7 @@ namespace DriveDeck.App.Widgets
             {
                 _history.Add(v);
                 if (_history.Count > GraphPoints) _history.RemoveAt(0);
-                double w = Math.Max(1, ActualWidth - 16), h = Math.Max(1, ActualHeight - 34);
+                double w = Math.Max(1, ActualWidth - 16), h = Math.Max(1, ActualHeight - 42);
                 var pts = new PointCollection();
                 for (int i = 0; i < _history.Count; i++)
                 {
@@ -254,6 +302,13 @@ namespace DriveDeck.App.Widgets
                     pts.Add(new Point(w * i / (GraphPoints - 1), h * (1 - ratio)));
                 }
                 _line.Points = pts;
+                if (pts.Count > 1)
+                {
+                    var area = new PointCollection { new Point(pts[0].X, h) };
+                    foreach (var pt in pts) area.Add(pt);
+                    area.Add(new Point(pts[pts.Count - 1].X, h));
+                    _area.Points = area;
+                }
                 _line.Stroke = fill;
             }
         }
@@ -267,16 +322,20 @@ namespace DriveDeck.App.Widgets
             return AlertLevel.Normal;
         }
 
-        private static string StatusText(DateTime now)
+        private void ShowStatus()
         {
+            var grey = Color.FromArgb(255, 95, 107, 121);
+            var green = Color.FromArgb(255, 76, 217, 100);
             var d = AppHub.Dashcam;
-            string rec = d.SegmentStart.HasValue ? "● Recording" : d.IsOverheated ? "Paused (hot)" : "Not recording";
-            string obd = "OBD: " + (AppHub.ObdStatus ?? "off");
+            StatusRow(0, d.SegmentStart.HasValue ? "Recording" : d.IsOverheated ? "Paused (hot)" : "Not recording",
+                d.SegmentStart.HasValue ? AlarmColor : d.IsOverheated ? WarnColor : grey);
+            bool obd = AppHub.Obd != null && AppHub.Obd.State == ObdState.Connected;
+            StatusRow(1, AppHub.ObdStatus == null || AppHub.ObdStatus.StartsWith("OBD") ? (AppHub.ObdStatus ?? "OBD off") : "OBD: " + AppHub.ObdStatus, obd ? green : grey);
             var fix = AppHub.Location.Last;
-            string gps = "GPS: " + (fix != null ? (fix.Accuracy.HasValue ? "±" + Math.Round(fix.Accuracy.Value) + " m" : "fix") : (AppHub.Location.State ?? "off"));
-            string loop = "Loop: " + (d.LoopBytes / (1024.0 * 1024 * 1024)).ToString("0.0") + " GB";
+            StatusRow(2, "GPS: " + (fix != null ? (fix.Accuracy.HasValue ? "±" + Math.Round(fix.Accuracy.Value) + " m" : "fix") : (AppHub.Location.State ?? "off")), fix != null ? green : grey);
+            StatusRow(3, "Loop: " + (d.LoopBytes / (1024.0 * 1024 * 1024)).ToString("0.0") + " GB", _accent);
             int faults = AppHub.CurrentDtcs != null ? AppHub.CurrentDtcs.Count : 0;
-            return rec + "\n" + obd + "\n" + gps + "\n" + loop + (faults > 0 ? "\nFaults: " + faults : "");
+            StatusRow(4, faults > 0 ? "Faults: " + faults : null, AlarmColor);
         }
     }
 }
