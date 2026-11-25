@@ -44,11 +44,12 @@ namespace DriveDeck.Core
         /// <param name="capBytes">Maximum size of the loop folder; null = unlimited (only the free-space reserve applies).</param>
         /// <param name="freeBytes">Free space on the phone right now.</param>
         /// <param name="reserveBytes">Free space that must always remain for the phone itself.</param>
+        /// <param name="keepFrom">Footage that ends after this moment may still be needed for an incident and is kept.</param>
         /// <param name="incomingBytes">Expected size of the next segment, so we make room before it is written.</param>
         public static List<SegmentInfo> SelectForDeletion(IEnumerable<SegmentInfo> segments, ulong? capBytes,
-                                                         ulong freeBytes, ulong reserveBytes, ulong incomingBytes)
+                                                         ulong freeBytes, ulong reserveBytes, ulong incomingBytes, DateTime? keepFrom = null)
         {
-            var deletable = segments.Where(s => !s.InProgress).OrderBy(s => s.Start).ToList();
+            var deletable = segments.Where(s => !s.InProgress && !(keepFrom.HasValue && (s.End ?? DateTime.MaxValue) > keepFrom.Value)).OrderBy(s => s.Start).ToList();
             ulong total = 0;
             foreach (var s in segments) total += s.SizeBytes;
             var result = new List<SegmentInfo>();

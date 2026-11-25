@@ -117,6 +117,9 @@ namespace DriveDeck.App.Services
     /// <summary>Latest value per key, written from any thread, read by the UI at its own refresh rate.</summary>
     public sealed class ValueHub
     {
+        /// <summary>Older values are not shown and raise no alarms; longer than the slowest polling interval (5 s).</summary>
+        public const double StaleSeconds = 8;
+
         private readonly ConcurrentDictionary<string, Sample> _values = new ConcurrentDictionary<string, Sample>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, bool> _unsupported = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
@@ -164,6 +167,11 @@ namespace DriveDeck.App.Services
                 while (Items.Count > 30) Items.RemoveAt(Items.Count - 1);
                 var h = Posted; if (h != null) h(n2);
             });
+        }
+
+        public void RemoveWhere(Func<Notice, bool> match)
+        {
+            Ui.Run(() => { foreach (var n in Items.Where(match).ToList()) Items.Remove(n); });
         }
 
         public void Remove(string key)
@@ -228,7 +236,7 @@ namespace DriveDeck.App.Services
         private ImpactDetector _det;
         public event Action<double> Impact;
         public double CurrentG { get { return _det != null ? _det.LastDynamicG : 0; } }
-        public bool Available { get { return Accelerometer.GetDefault() != null; } }
+        public bool Running { get { return _acc != null; } }
 
         public bool Start(double thresholdG)
         {
@@ -272,6 +280,8 @@ namespace DriveDeck.App.Services
         public static readonly ImpactService Impact = new ImpactService();
         public static ObdPoller Obd { get; private set; }
         public static IReadOnlyList<Dtc> CurrentDtcs { get; set; }
+        /// <summary>The fault memory was read at least once, so an empty list really means "no faults".</summary>
+        public static bool DtcsRead { get { return Obd != null && Obd.DtcsRead; } }
         public static string ObdStatus { get; set; }
 
         public static IEnumerable<ValueDefinition> AllValues { get { return PidCatalog.All(Settings.Obd.CustomValues); } }
@@ -283,6 +293,7 @@ namespace DriveDeck.App.Services
             if (Obd != null) { await Obd.StopAsync(); Obd = null; }
             Values.ClearUnsupported();
             CurrentDtcs = new List<Dtc>();
+            Notices.RemoveWhere(n => n.Key.StartsWith("dtc:"));
             var o = Settings.Obd;
             if (!o.Enabled || string.IsNullOrEmpty(o.DeviceId)) { ObdStatus = o.Enabled ? "No adapter selected" : "OBD off"; return; }
             string id = o.DeviceId;
@@ -300,21 +311,24 @@ namespace DriveDeck.App.Services
             poller.StateChanged += (s, m) =>
             {
                 ObdStatus = m;
-                if (s == ObdState.Connected) Notices.Post("obd", Severity.Info, "OBD connected", m);
+                if (s == ObdState.Connected) { Values.ClearUnsupported(); Notices.Post("obd", Severity.Info, "OBD connected", m); }
                 else if (s == ObdState.Failed) Notices.Post("obd", Severity.Warning, "OBD adapter not reachable", m, TimeSpan.FromMinutes(2));
             };
             poller.DtcsChanged += (all, fresh) =>
             {
                 CurrentDtcs = all;
+                var keys = new HashSet<string>(all.Select(DtcKey));
+                Notices.RemoveWhere(n => n.Key.StartsWith("dtc:") && !keys.Contains(n.Key)); // codes the car no longer reports
                 foreach (var d in fresh)
-                    Notices.Post("dtc:" + d.Code + d.Kind, d.Kind == DtcKind.Pending ? Severity.Warning : Severity.Alarm,
+                    Notices.Post(DtcKey(d), d.Kind == DtcKind.Pending ? Severity.Warning : Severity.Alarm,
                         "Fault " + d.Code + (d.Kind == DtcKind.Pending ? " (pending)" : "") + (string.IsNullOrEmpty(d.Ecu) ? "" : " – " + d.Ecu),
                         d.Description);
-                if (all.Count == 0) Ui.Run(() => { foreach (var n in Notices.Items.Where(x => x.Key.StartsWith("dtc:")).ToList()) Notices.Items.Remove(n); });
             };
             Obd = poller;
             poller.Start();
         }
+
+        private static string DtcKey(Dtc d) { return "dtc:" + d.Code + d.Kind + d.Ecu; }
 
         public static void UpdateWantedValues(IEnumerable<string> keys)
         {

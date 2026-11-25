@@ -10,16 +10,17 @@ It gives an old Lumia a second life on the windscreen: live engine data from a c
 ### Dashboard
 - Live OBD-II data through a **Bluetooth (classic/SPP) ELM327** adapter: rpm, speed, load, throttle, pedal, MAP/boost, MAF, ignition timing, coolant / intake / oil / ambient temperature, fuel trims, fuel rate, rail pressure, ECU and battery voltage, fuel level, instant consumption, plus GPS speed/altitude and phone G-force.
 - **Custom values**: your own read-only requests (e.g. manufacturer UDS `22 xx xx` on a chosen ECU header) with a simple formula such as `(A*256+B)/10`.
-- **Configurable layout**: up to 8 swipeable pages, a 1–6 × 1–6 grid per page, separate pages for landscape and portrait; tiles can be a number, dial gauge, bar, graph, camera preview, clock or status, each with its own span, colour, scale and warning/alarm thresholds.
+- **Configurable layout**: up to 8 swipeable pages, a 1–6 × 1–6 grid per page, separate pages for landscape and portrait; tiles can be a number, dial gauge, bar, graph, camera preview, clock or status, each with its own span, colour, scale and warning/alarm thresholds, which are watched on all pages.
 - **Fault-code alerts**: stored, pending and (optionally) permanent codes from the engine and gearbox, checked periodically and immediately when the check-engine lamp turns on. New faults appear in a thin notification strip that never covers the tiles and collapses into a small badge.
 
 ### Dashcam
-- Loop recording in 30 s – 5 min segments, 720p/1080p, 24/30 fps, adjustable bitrate, optional sound.
+- Loop recording in 30 s – 5 min clips with the back or front camera (one at a time), in every 16:9 mode the camera offers to apps, 2–60 Mbit/s, optional sound. The real frame rate of the first clip is measured; if the burned-in stamp slows recording down, it is left out.
+- Automatic focus or focus fixed on the road; tap the camera picture to focus again.
 - **Storage cap slider or Unlimited**, always keeping a free-space reserve for the phone; the oldest clips are overwritten first.
 - GPS **speed burned into the video** (optional date/time, coordinates, custom label) and/or a **subtitle track (.srt)** next to each clip, plus a **.gpx** track. Each can be turned off.
 - **Impact detection** with the accelerometer (presets or custom g threshold with a live meter): footage from before and after the impact (default 60 s / 30 s) is moved to a protected *Events* folder with an `incident.txt`. A button saves incidents manually.
 - Optional emergency-call prompt after an impact (the phone asks before dialling).
-- Pauses on overheating and resumes when the phone cools down; built-in recordings browser with subtitle playback.
+- Pauses on overheating and resumes when the phone cools down; built-in recordings browser with subtitle playback and sharing.
 
 ## Install on a phone
 
@@ -38,9 +39,10 @@ Recordings are stored in `Videos\DriveDeck` (visible over USB). A diagnostic log
 | Area | Status |
 |---|---|
 | Dashboard UI, layout editor, settings | Runs on a Lumia 930 (Windows 10 Mobile 1607) |
-| Dashcam: loop recording, burned-in stamp, .srt/.gpx, storage limit | Verified on a Lumia 930 (1080p clips checked on a PC) |
+| Dashcam: loop recording, burned-in stamp, .srt/.gpx, storage limit | Version 1.0 verified on a Lumia 930 (1080p clips checked on a PC) |
+| Versions 1.1–1.3: new layout, other video modes, focus, front camera | New layout runs on a Lumia 930, whose back camera lists at most 1080p at 30 fps. Burning the stamp in slows 1080p down to about 20 fps there (30 without it). Focus fix, front camera and the 1.3 search for unlisted modes are **not yet verified on a phone** |
 | Impact detection, incident saving | Implemented and unit-tested; not yet verified in a real impact (hopefully never) |
-| OBD-II via ELM327 | Implemented and tested against a simulated ELM327/CAN car (94 unit tests); **not yet tested in a real car** – feedback welcome |
+| OBD-II via ELM327 | Implemented and tested against a simulated ELM327/CAN car (104 unit tests in total); **not yet tested in a real car** – feedback welcome |
 
 ## Build from source
 
@@ -59,7 +61,7 @@ Project layout:
 | `src/Core` | Platform-independent logic: ELM327 parser (ISO-TP), read-only command guard, formula language, fault-code decoding, OBD polling, loop-storage policy, impact detector, stamp/SRT/GPX writers, settings validation |
 | `src/App` | UWP app: dashboard, settings, layout editor, recordings, Bluetooth transport, dashcam service |
 | `src/Effects` | GPU video effect (Win2D) that burns the stamp into recorded frames |
-| `tests/Core.Tests` | 94 unit tests, including a simulated ELM327 on a CAN car |
+| `tests/Core.Tests` | 104 unit tests, including a simulated ELM327 on a CAN car |
 
 ## Limitations
 

@@ -4,21 +4,31 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     RequestedTheme="Dark"
     NavigationCacheMode="Enabled"
-    Background="#FF0B0E12">
+    Background="{StaticResource PageBrush}">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <Grid Background="#FF14181E">
-            <TextBlock Text="Settings" FontSize="22" FontWeight="SemiBold" Margin="16,10" VerticalAlignment="Center" />
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="8">
-                <Button Content="Cancel" Click="Cancel_Click" Margin="0,0,8,0" />
-                <Button Content="Save" Click="Save_Click" Background="#FF3FA9F5" />
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid Grid.ColumnSpan="2" Background="{StaticResource BarBrush}" Padding="6,4">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="&#xE72B;" Style="{StaticResource RailButton}" Click="Cancel_Click" />
+                <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold" Margin="6,0" VerticalAlignment="Center" />
             </StackPanel>
+            <Button Content="Save" Style="{StaticResource AccentButton}" Click="Save_Click" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,4,0" />
         </Grid>
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <StackPanel x:Name="Body" Margin="16,8,16,40" MaxWidth="640" HorizontalAlignment="Stretch" />
+        <!-- Sections: a column in landscape, a row in portrait (placed in code) -->
+        <ScrollViewer x:Name="NavScroll" Grid.Row="1" Grid.ColumnSpan="2" Background="{StaticResource BarBrush}"
+                      HorizontalScrollMode="Auto" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden">
+            <StackPanel x:Name="Nav" Orientation="Horizontal" Margin="6,0,6,6" />
+        </ScrollViewer>
+        <ScrollViewer x:Name="BodyScroll" Grid.Row="2" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="Body" Margin="12,10,12,40" MaxWidth="680" HorizontalAlignment="Stretch" />
         </ScrollViewer>
     </Grid>
 </Page>

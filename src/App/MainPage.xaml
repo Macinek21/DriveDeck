@@ -4,122 +4,136 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     RequestedTheme="Dark"
     NavigationCacheMode="Required"
-    Background="Black">
+    Background="{StaticResource PageBrush}">
 
-    <Grid x:Name="Root" Background="Black">
+    <Grid Background="{StaticResource PageBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
 
-
-        <!-- Notification strip (top or bottom, set in Settings). Takes its own row so it never covers tiles. -->
-        <Border x:Name="Strip" Grid.Row="0" Visibility="Collapsed" Tapped="Strip_Tapped" Padding="10,6"
-                Background="#FF2B1A1A" BorderThickness="0,0,0,2" BorderBrush="#FFE81123">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StripGlyph" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" Margin="0,0,10,0" />
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="StripTitle" FontWeight="SemiBold" FontSize="15" Margin="0,0,10,0" />
-                    <TextBlock x:Name="StripDetail" FontSize="14" Foreground="#FFBBBBBB" TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-                <TextBlock Grid.Column="2" FontFamily="Segoe MDL2 Assets" Text="&#xE70D;" FontSize="14" VerticalAlignment="Center" Foreground="#FF999999" />
-            </Grid>
-        </Border>
-
-        <FlipView x:Name="Pages" Grid.Row="1" Background="Black" SelectionChanged="Pages_SelectionChanged" />
-
-        <!-- One live camera preview, laid over the camera tile of the visible page (never re-parented). Touches pass through. -->
-        <Grid x:Name="PreviewLayer" Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Top" Width="1" Height="1"
-              Opacity="0.01" IsHitTestVisible="False">
-            <CaptureElement x:Name="Preview" Stretch="UniformToFill" />
-            <TextBlock x:Name="RecBadge" FontSize="14" FontWeight="Bold" Foreground="#FFE81123" Margin="8,4,0,0"
-                       HorizontalAlignment="Left" VerticalAlignment="Top" />
-        </Grid>
-
-        <!-- Collapsed notifications: small chip in the corner -->
-        <Button x:Name="Chip" Grid.Row="1" Visibility="Collapsed" Click="Chip_Click" HorizontalAlignment="Right" VerticalAlignment="Top"
-                Margin="0,6,6,0" Padding="8,2" MinWidth="0" MinHeight="0" Background="#CC2B1A1A" BorderThickness="0">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock x:Name="ChipGlyph" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
-                <TextBlock x:Name="ChipCount" FontSize="14" FontWeight="SemiBold" Margin="6,0,0,0" VerticalAlignment="Center" />
+        <!-- Controls: a bar on the left in landscape, at the bottom in portrait (placed in code) -->
+        <Border x:Name="Rail" Background="{StaticResource BarBrush}" Padding="2">
+            <StackPanel x:Name="RailPanel" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Button x:Name="RecButton" Style="{StaticResource RailButton}" Click="RecToggle_Click" Content="&#xE7C8;" Foreground="{StaticResource DangerBrush}" />
+                <Button x:Name="SaveButton" Style="{StaticResource RailButton}" Click="Save_Click" Content="&#xE72E;" Background="{StaticResource DangerBrush}" Foreground="White" />
+                <Button x:Name="FlipButton" Style="{StaticResource RailButton}" Click="Flip_Click" Content="&#xE89E;" />
+                <Button x:Name="FaultButton" Style="{StaticResource RailButton}" Click="Faults_Click" Content="&#xE7BA;" />
+                <Button Style="{StaticResource RailButton}" Click="Recordings_Click" Content="&#xE714;" />
+                <Button Style="{StaticResource RailButton}" Click="Layout_Click" Content="&#xE8A9;" />
+                <Button Style="{StaticResource RailButton}" Click="Settings_Click" Content="&#xE713;" />
             </StackPanel>
-        </Button>
-
-        <!-- Expanded notification list -->
-        <Border x:Name="NoticePanel" Grid.Row="1" Visibility="Collapsed" Background="#F0101418" BorderBrush="#FF333A44" BorderThickness="1"
-                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6" MaxWidth="460" MaxHeight="320" CornerRadius="6">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <Grid Margin="10,6">
-                    <TextBlock Text="Notifications" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Clear" Click="ClearNotices_Click" MinHeight="0" Padding="10,2" Margin="0,0,6,0" />
-                        <Button Content="Close" Click="CloseNotices_Click" MinHeight="0" Padding="10,2" />
-                    </StackPanel>
-                </Grid>
-                <ListView x:Name="NoticeList" Grid.Row="1" SelectionMode="None" Padding="0,0,0,6">
-                    <ListView.ItemTemplate>
-                        <DataTemplate>
-                            <Grid Margin="0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="28" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="{Binding Glyph}" FontSize="16" Margin="0,2,0,0" />
-                                <StackPanel Grid.Column="1">
-                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                    <TextBlock Text="{Binding Detail}" FontSize="13" Foreground="#FFAAAAAA" TextWrapping="Wrap" />
-                                </StackPanel>
-                                <TextBlock Grid.Column="2" Text="{Binding TimeText}" FontSize="12" Foreground="#FF888888" Margin="8,2,0,0" />
-                            </Grid>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
-            </Grid>
         </Border>
 
-        <!-- Small floating controls -->
-        <Button x:Name="SaveButton" Grid.Row="1" Click="Save_Click" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="8"
-                Width="52" Height="52" Padding="0" Background="#CCE81123" BorderThickness="0" ToolTipService.ToolTip="Save incident">
-            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72E;" FontSize="22" />
-        </Button>
-        <Button x:Name="MenuButton" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8"
-                Width="44" Height="44" Padding="0" Background="#AA202630" BorderThickness="0">
-            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE712;" FontSize="18" />
-            <Button.Flyout>
-                <MenuFlyout>
-                    <MenuFlyoutItem x:Name="RecToggle" Text="Stop recording" Click="RecToggle_Click" />
-                    <MenuFlyoutItem Text="Fault codes" Click="Faults_Click" />
-                    <MenuFlyoutItem Text="Recordings" Click="Recordings_Click" />
-                    <MenuFlyoutSeparator />
-                    <MenuFlyoutItem Text="Edit dashboard layout" Click="Layout_Click" />
-                    <MenuFlyoutItem Text="Settings" Click="Settings_Click" />
-                </MenuFlyout>
-            </Button.Flyout>
-        </Button>
+        <Grid x:Name="Root" Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Notification strip (top or bottom, set in Settings). Takes its own row so it never covers tiles. -->
+            <Border x:Name="Strip" Grid.Row="0" Visibility="Collapsed" Tapped="Strip_Tapped" Padding="12,7" Margin="6,6,6,0"
+                    CornerRadius="10" Background="#FF2B1A1A" BorderThickness="1" BorderBrush="#FFE81123">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StripGlyph" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <TextBlock x:Name="StripTitle" Grid.Column="1" FontWeight="SemiBold" FontSize="15" Margin="0,0,10,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="StripDetail" Grid.Column="2" FontSize="14" Foreground="#FFBFC8D2" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" FontFamily="Segoe MDL2 Assets" Text="&#xE70D;" FontSize="14" VerticalAlignment="Center" Foreground="{StaticResource DimBrush}" Margin="8,0,0,0" />
+                </Grid>
+            </Border>
+
+            <FlipView x:Name="Pages" Grid.Row="1" Background="Transparent" SelectionChanged="Pages_SelectionChanged" />
+
+            <!-- One live camera preview, laid over the camera tile of the visible page (never re-parented). Touches pass through. -->
+            <Grid x:Name="PreviewLayer" Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Top" Width="1" Height="1"
+                  Opacity="0.01" IsHitTestVisible="False">
+                <CaptureElement x:Name="Preview" Stretch="UniformToFill" />
+                <!-- Rounded corners: a live picture cannot be clipped round, so the corners are covered -->
+                <Path HorizontalAlignment="Left" VerticalAlignment="Top" Fill="{StaticResource PageBrush}" Data="M0,0 L14,0 A14,14 0 0 0 0,14 Z" />
+                <Path HorizontalAlignment="Right" VerticalAlignment="Top" Fill="{StaticResource PageBrush}" Data="M0,0 L14,0 L14,14 A14,14 0 0 0 0,0 Z" />
+                <Path HorizontalAlignment="Left" VerticalAlignment="Bottom" Fill="{StaticResource PageBrush}" Data="M0,0 L0,14 L14,14 A14,14 0 0 1 0,0 Z" />
+                <Path HorizontalAlignment="Right" VerticalAlignment="Bottom" Fill="{StaticResource PageBrush}" Data="M14,0 L14,14 L0,14 A14,14 0 0 0 14,0 Z" />
+                <Border Background="#99000000" CornerRadius="9" Padding="9,3" Margin="10" HorizontalAlignment="Left" VerticalAlignment="Top">
+                    <TextBlock x:Name="RecBadge" FontSize="13" FontWeight="SemiBold" Foreground="#FFFF5A5F" />
+                </Border>
+                <Border Background="#99000000" CornerRadius="9" Padding="9,3" Margin="10" HorizontalAlignment="Right" VerticalAlignment="Top">
+                    <TextBlock x:Name="ModeBadge" FontSize="12" Foreground="#FFDCE3EA" />
+                </Border>
+            </Grid>
+
+            <!-- Which page is shown -->
+            <StackPanel x:Name="Dots" Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,1" IsHitTestVisible="False" />
+
+            <!-- Collapsed notifications: small chip in the corner -->
+            <Button x:Name="Chip" Grid.Row="1" Visibility="Collapsed" Style="{StaticResource SoftButton}" Click="Chip_Click" HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Margin="0,8,8,0" Padding="10,4" MinHeight="0" Background="#E6222B37">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="ChipGlyph" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+                    <TextBlock x:Name="ChipCount" FontSize="14" FontWeight="SemiBold" Margin="6,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+
+            <!-- Expanded notification list -->
+            <Border x:Name="NoticePanel" Grid.Row="1" Visibility="Collapsed" Background="#F5161C24" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+                    HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8" MaxWidth="460" MaxHeight="320" CornerRadius="14">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="14,10,10,6" MinWidth="280">
+                        <TextBlock Text="Notifications" FontWeight="SemiBold" FontSize="17" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Clear" Style="{StaticResource SoftButton}" Click="ClearNotices_Click" MinHeight="0" Padding="12,5" Margin="0,0,6,0" />
+                            <Button Content="Close" Style="{StaticResource SoftButton}" Click="CloseNotices_Click" MinHeight="0" Padding="12,5" />
+                        </StackPanel>
+                    </Grid>
+                    <ListView x:Name="NoticeList" Grid.Row="1" SelectionMode="None" Padding="0,0,0,6">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="30" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="{Binding Glyph}" FontSize="16" Margin="0,2,0,0" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Detail}" FontSize="13" Foreground="#FF8C99A8" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" Text="{Binding TimeText}" FontSize="12" Foreground="#FF8C99A8" Margin="8,2,0,0" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
+            </Border>
+        </Grid>
 
         <!-- Impact overlay -->
-        <Grid x:Name="ImpactOverlay" Grid.RowSpan="3" Visibility="Collapsed" Background="#E6000000">
+        <Grid x:Name="ImpactOverlay" Grid.RowSpan="2" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#F00A0E13">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520" Margin="20">
-                <TextBlock Text="Impact detected" FontSize="34" FontWeight="SemiBold" Foreground="#FFE81123" HorizontalAlignment="Center" />
-                <TextBlock x:Name="ImpactDetail" FontSize="17" TextWrapping="Wrap" TextAlignment="Center" Margin="0,10,0,24" />
-                <Button x:Name="CallButton" Click="Call_Click" HorizontalAlignment="Stretch" Height="64" Background="#FFE81123" Margin="0,0,0,12">
+                <TextBlock Text="Impact detected" FontSize="32" FontWeight="SemiBold" Foreground="{StaticResource DangerBrush}" HorizontalAlignment="Center" />
+                <TextBlock x:Name="ImpactDetail" FontSize="16" TextWrapping="Wrap" TextAlignment="Center" Margin="0,8,0,20" Foreground="#FFBFC8D2" />
+                <Button x:Name="CallButton" Style="{StaticResource SoftButton}" Click="Call_Click" HorizontalAlignment="Stretch" Height="64" Background="{StaticResource DangerBrush}" Margin="0,0,0,12">
                     <TextBlock x:Name="CallText" FontSize="22" FontWeight="SemiBold" />
                 </Button>
-                <Button Content="I'm OK – dismiss" Click="DismissImpact_Click" HorizontalAlignment="Stretch" Height="52" FontSize="18" />
+                <Button Content="I'm OK – dismiss" Style="{StaticResource SoftButton}" Click="DismissImpact_Click" HorizontalAlignment="Stretch" Height="52" FontSize="18" />
             </StackPanel>
         </Grid>
 
-        <Border x:Name="NightDim" Grid.RowSpan="3" Background="Black" Opacity="0" IsHitTestVisible="False" />
+        <Border x:Name="NightDim" Grid.RowSpan="2" Grid.ColumnSpan="2" Background="Black" Opacity="0" IsHitTestVisible="False" />
     </Grid>
 </Page>

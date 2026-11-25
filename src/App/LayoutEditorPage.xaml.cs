@@ -72,7 +72,7 @@ namespace DriveDeck.App
 
         private Button Btn(string text, Action click)
         {
-            var b = new Button { Content = text, Margin = new Thickness(0, 4, 8, 4) };
+            var b = new Button { Content = text, Margin = new Thickness(0, 4, 8, 4), Style = (Style)Application.Current.Resources["SoftButton"] };
             b.Click += (s, e) => click();
             return b;
         }
@@ -108,10 +108,63 @@ namespace DriveDeck.App
                 Combo("Show when phone is", new[] { "Any orientation", "Landscape", "Portrait" }, Array.IndexOf(new[] { "any", "landscape", "portrait" }, p.Orientation),
                       i => { p.Orientation = new[] { "any", "landscape", "portrait" }[i]; Build(); })));
 
-            Body.Children.Add(new TextBlock { Text = "Tap an empty cell to add a tile, or a tile to edit it. Swipe left/right on the dashboard to switch pages.", FontSize = 13, Foreground = new SolidColorBrush(Colors.Gray), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) });
+            Body.Children.Add(new TextBlock { Text = "Tap an empty cell (+) to add a tile, a tile to edit it. Press and hold a tile to delete it.", FontSize = 13, Foreground = new SolidColorBrush(Colors.Gray), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) });
+            TileBar(p);
             Body.Children.Add(BuildPreview(p));
 
             if (_selected != null && p.Widgets.Contains(_selected)) BuildWidgetEditor(p, _selected);
+        }
+
+        private string Title(WidgetConfig w)
+        {
+            string kind = KindLabels[Array.IndexOf(Kinds, w.Kind)];
+            if (w.Kind == WidgetKind.Camera || w.Kind == WidgetKind.Clock || w.Kind == WidgetKind.Status) return kind;
+            var def = _values.FirstOrDefault(v => v.Key == w.ValueKey);
+            return (!string.IsNullOrEmpty(w.Label) ? w.Label : def != null ? def.ShortName : "?") + " – " + kind;
+        }
+
+        private static bool Overlaps(WidgetConfig a, WidgetConfig b)
+        {
+            return a != b && a.Row < b.Row + b.RowSpan && b.Row < a.Row + a.RowSpan && a.Column < b.Column + b.ColumnSpan && b.Column < a.Column + a.ColumnSpan;
+        }
+
+        /// <summary>Right above the grid: choose a tile (also one hidden under another) and delete it without scrolling.</summary>
+        private void TileBar(DashboardPage p)
+        {
+            var hidden = p.Widgets.Where((w, i) => p.Widgets.Skip(i + 1).Any(o => Overlaps(w, o))).ToList();
+            if (hidden.Count > 0)
+                Body.Children.Add(new TextBlock
+                {
+                    Text = "Covered by another tile: " + string.Join(", ", hidden.Select(Title)) + ". Choose it in this list to move or delete it.",
+                    FontSize = 13, Foreground = new SolidColorBrush(WidgetView.WarnColor), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4)
+                });
+            var labels = new List<string> { "(none)" };
+            labels.AddRange(p.Widgets.Select(w => Title(w) + ", row " + (w.Row + 1) + ", column " + (w.Column + 1) + (hidden.Contains(w) ? " (covered)" : "")));
+            Body.Children.Add(Combo("Selected tile", labels, _selected == null ? 0 : p.Widgets.IndexOf(_selected) + 1, i => { _selected = i == 0 ? null : p.Widgets[i - 1]; Build(); }));
+            if (_selected == null || !p.Widgets.Contains(_selected)) return;
+            var t = _selected;
+            var del = Btn("Delete this tile", () => Delete(p, t));
+            del.Background = new SolidColorBrush(WidgetView.AlarmColor);
+            Body.Children.Add(Row(del, Btn("Done", () => { _selected = null; Build(); })));
+        }
+
+        private void Delete(DashboardPage p, WidgetConfig w)
+        {
+            p.Widgets.Remove(w);
+            if (_selected == w) _selected = null;
+            Build();
+        }
+
+        private void AskDelete(FrameworkElement at, DashboardPage p, WidgetConfig w)
+        {
+            var menu = new MenuFlyout();
+            var edit = new MenuFlyoutItem { Text = "Edit " + Title(w) };
+            var del = new MenuFlyoutItem { Text = "Delete " + Title(w) };
+            edit.Click += (s, e) => { _selected = w; Build(); };
+            del.Click += (s, e) => Delete(p, w);
+            menu.Items.Add(edit);
+            menu.Items.Add(del);
+            menu.ShowAt(at);
         }
 
         private static void ClampWidgets(DashboardPage p)
@@ -157,7 +210,7 @@ namespace DriveDeck.App
                 var color = string.IsNullOrEmpty(w.Color) ? accent : WidgetView.Parse(w.Color, accent);
                 var tile = new Border
                 {
-                    Background = new SolidColorBrush(WidgetView.TileColor), Margin = new Thickness(2), CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(WidgetView.TileColor), Margin = new Thickness(2), CornerRadius = new CornerRadius(8),
                     BorderBrush = new SolidColorBrush(w == _selected ? Colors.White : color), BorderThickness = new Thickness(w == _selected ? 3 : 1),
                     Child = new StackPanel
                     {
@@ -171,6 +224,7 @@ namespace DriveDeck.App
                 };
                 var captured = w;
                 tile.Tapped += (s, e) => { _selected = captured; e.Handled = true; Build(); };
+                tile.Holding += (s, e) => { if (e.HoldingState == Windows.UI.Input.HoldingState.Started) { e.Handled = true; AskDelete(tile, p, captured); } };
                 Grid.SetRow(tile, w.Row); Grid.SetColumn(tile, w.Column);
                 Grid.SetRowSpan(tile, w.RowSpan); Grid.SetColumnSpan(tile, w.ColumnSpan);
                 grid.Children.Add(tile);
@@ -181,7 +235,7 @@ namespace DriveDeck.App
         private void BuildWidgetEditor(DashboardPage p, WidgetConfig w)
         {
             var panel = new StackPanel();
-            Body.Children.Add(new Border { Background = new SolidColorBrush(Color.FromArgb(255, 20, 24, 30)), Padding = new Thickness(12), Margin = new Thickness(0, 12, 0, 0), Child = panel });
+            Body.Children.Add(new Border { Background = new SolidColorBrush(WidgetView.TileColor), CornerRadius = new CornerRadius(14), Padding = new Thickness(14), Margin = new Thickness(0, 12, 0, 0), Child = panel });
             panel.Children.Add(new TextBlock { Text = "Selected tile", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) });
 
             panel.Children.Add(Combo("Type", KindLabels, Array.IndexOf(Kinds, w.Kind), i => { w.Kind = Kinds[i]; Build(); }));
@@ -211,7 +265,7 @@ namespace DriveDeck.App
             }
 
             panel.Children.Add(Row(
-                Btn("Delete tile", () => { p.Widgets.Remove(w); _selected = null; Build(); }),
+                Btn("Delete tile", () => Delete(p, w)),
                 Btn("Done", () => { _selected = null; Build(); })));
         }
 

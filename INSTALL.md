@@ -63,7 +63,7 @@ install-to-phone.ps1                  installer script for Method A
 1. Open **DriveDeck** and turn the phone to landscape.
 2. Allow **camera**, **location** and access to **Videos** when asked (and the microphone, if you later enable sound recording). You can change this later in *Settings › Privacy*.
 3. The camera tile should show **● REC** with a running timer. Clips are saved every minute to `Videos\DriveDeck\Loop`.
-4. Open the menu (☰, bottom right) › **Settings** to set resolution, storage limit, speed stamp, impact sensitivity and more, and › **Edit dashboard layout** to arrange the tiles.
+4. Use the bar on the left (at the bottom in portrait): record, save incident, switch camera, fault codes, recordings, layout, settings. In **Settings** (⚙) set resolution, storage limit, speed stamp, impact sensitivity and more; the layout button arranges the tiles.
 
 DriveDeck must stay on screen while recording – Windows 10 Mobile pauses apps in the background. It keeps the screen on by itself; use a car charger.
 
@@ -106,7 +106,7 @@ On the phone: app list › press and hold **DriveDeck** › **Uninstall**. Recor
 | Pairing code rejected | Codes expire quickly – tap **Pair** again and use the new code. |
 | "Install failed" for an existing installation | The script retries as an update automatically. A release with the same or lower version number than the installed one cannot be installed over it – uninstall first. |
 | Camera tile says "not recording" | Check the notification badge (top right) and `Videos\DriveDeck\DriveDeck-log.txt`. Make sure camera and Videos access are allowed in *Settings › Privacy*. |
-| "HOT – paused" | The phone overheated; it resumes when cool. Use 720p and keep the phone out of direct sun. |
+| "HOT – paused" | The phone overheated; it resumes when cool. Choose 1080p 30 or less and keep the phone out of direct sun. |
 | No OBD values | Ignition on? Adapter paired and selected? Try protocol *Automatic*. Values the car does not support show `n/a`. |
 
 Still stuck? Open an issue and attach `DriveDeck-log.txt` (check it first – it contains no locations, but read it before sharing anything).

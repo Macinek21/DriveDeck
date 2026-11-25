@@ -185,6 +185,7 @@ namespace DriveDeck.Core
             return true;
         }
 
+        /// <summary>Null when the codes could not be read, so an adapter hiccup never looks like "no faults".</summary>
         public async Task<List<Dtc>> ReadDtcsAsync(bool includePermanent, CancellationToken ct)
         {
             await EnsureHeaderAsync(DefaultHeader, ct).ConfigureAwait(false);
@@ -199,8 +200,10 @@ namespace DriveDeck.Core
             {
                 byte expect = (byte)(Convert.ToByte(mode.Key, 16) + 0x40);
                 var res = ElmResponseParser.Parse(await _t.SendAsync(mode.Key, TimeSpan.FromSeconds(4), ct).ConfigureAwait(false), mode.Key);
-                if (res.Status != ElmStatus.Ok) continue;
-                foreach (var m in res.Messages.Where(x => x.Payload.Length > 0 && x.Payload[0] == expect))
+                if (res.Status == ElmStatus.Error) return null;
+                var replies = res.Messages.Where(x => x.Payload.Length > 0 && x.Payload[0] == expect).ToList();
+                if (mode.Value == DtcKind.Stored && replies.Count == 0) return null;
+                foreach (var m in replies)
                     all.AddRange(DtcDecoder.DecodeResponse(m.Payload, mode.Value, EcuName(m.Header)));
             }
             return all.Distinct().ToList();
@@ -218,16 +221,29 @@ namespace DriveDeck.Core
             }
         }
 
-        /// <summary>Returns MIL state from mode 01 PID 01, or null when unavailable.</summary>
+        /// <summary>Check-engine lamp: true if any control unit reports it on; null when unknown.</summary>
         public async Task<bool?> ReadMilAsync(CancellationToken ct)
         {
             await EnsureHeaderAsync(DefaultHeader, ct).ConfigureAwait(false);
             var res = ElmResponseParser.Parse(await _t.SendAsync("0101", DefaultTimeout, ct).ConfigureAwait(false), "0101");
-            var m = res.Messages.FirstOrDefault(x => x.Payload.Length >= 3 && x.Payload[0] == 0x41 && x.Payload[1] == 0x01);
-            if (m == null) return null;
-            bool mil; int count;
-            DtcDecoder.DecodeMonitorStatus(m.Payload[2], out mil, out count);
-            return mil;
+            var replies = res.Messages.Where(x => x.Payload.Length >= 3 && x.Payload[0] == 0x41 && x.Payload[1] == 0x01).ToList();
+            if (replies.Count == 0) return null;
+            bool any = false;
+            foreach (var m in replies)
+            {
+                bool mil; int count;
+                DtcDecoder.DecodeMonitorStatus(m.Payload[2], out mil, out count);
+                any |= mil;
+            }
+            return any;
+        }
+
+        /// <summary>Does the car answer at all? Tells a missing value from a switched-off ignition.</summary>
+        public async Task<bool> IsCarAnsweringAsync(CancellationToken ct)
+        {
+            await EnsureHeaderAsync(DefaultHeader, ct).ConfigureAwait(false);
+            var res = ElmResponseParser.Parse(await _t.SendAsync("0100", DefaultTimeout, ct).ConfigureAwait(false), "0100");
+            return res.Status == ElmStatus.Ok;
         }
 
         public async Task<ObdReading> ReadAdapterVoltageAsync(CancellationToken ct)

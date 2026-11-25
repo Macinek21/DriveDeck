@@ -18,6 +18,7 @@ namespace DriveDeck.Tests
         public string Header = "7DF";
         public int FailAfter = int.MaxValue;   // throw IOException after N commands (simulates BT drop)
         public bool MilOn = true;
+        public bool SecondUnitMil, IgnitionOff, Silent03;
         public string Dtc03 = "7E8 10 08 43 03 01 33 03 01\r7E8 21 06 04 55 55 55 55 55\r";
         public string Name { get { return "Simulator"; } }
 
@@ -39,6 +40,9 @@ namespace DriveDeck.Tests
             if (c.StartsWith("ATSH")) { Header = c.Substring(4); return "OK"; }
             if (c.StartsWith("AT")) return "OK";
 
+            if (IgnitionOff) return "NO DATA";
+            if (Silent03 && c == "03") return "NO DATA";
+
             if (Header == "7E0")
             {
                 if (c == "2211BD") return F("7E8", "62 11 BD 00 8C");          // VAG-style DID read
@@ -51,7 +55,7 @@ namespace DriveDeck.Tests
                 case "0100": return F("7E8", "41 00 9E 3F 80 03") + "\r" + F("7E9", "41 00 98 18 80 11");
                 case "0120": return F("7E8", "41 20 00 02 A0 01");
                 case "0140": return F("7E8", "41 40 44 80 00 14");
-                case "0101": return F("7E8", MilOn ? "41 01 83 07 E5 00" : "41 01 00 07 E5 00");
+                case "0101": return F("7E8", MilOn ? "41 01 83 07 E5 00" : "41 01 00 07 E5 00") + (SecondUnitMil ? "\r" + F("7E9", "41 01 81 00 00 00") : "");
                 case "010C": return F("7E8", "41 0C 1A F8");
                 case "010D": return F("7E8", "41 0D 32") + "\r" + F("7E9", "41 0D 32");
                 case "0105": return F("7E8", "41 05 7B");

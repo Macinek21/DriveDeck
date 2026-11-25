@@ -19,7 +19,7 @@ namespace DriveDeck.App
 {
     public sealed partial class MainPage : Page
     {
-        public static bool DashcamDirty, ObdDirty, LayoutDirty, SensorsDirty;
+        public static bool DashcamDirty, DashcamRestart, ObdDirty, LayoutDirty, SensorsDirty;
         public static MainPage Current { get; private set; }
 
         private readonly DispatcherTimer _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
@@ -28,7 +28,9 @@ namespace DriveDeck.App
         private readonly List<List<WidgetView>> _pageWidgets = new List<List<WidgetView>>();
         private readonly HashSet<string> _alarmed = new HashSet<string>();
         private DisplayRequest _displayRequest;
+        private bool _faultShown;
         private bool _initialized, _landscape, _wantRecording, _restarting;
+        private DateTime _lastAlarmCheck = DateTime.MinValue;
         private DateTime _lastWatchdog = DateTime.MinValue;
 
         public MainPage()
@@ -53,7 +55,12 @@ namespace DriveDeck.App
             if (LayoutDirty) { LayoutDirty = false; BuildPages(); }
             if (SensorsDirty) { SensorsDirty = false; await StartSensorsAsync(); }
             if (ObdDirty) { ObdDirty = false; await AppHub.RestartObdAsync(); UpdateWanted(); }
-            if (DashcamDirty) { DashcamDirty = false; await StartDashcamAsync(); }
+            if (DashcamRestart) { DashcamRestart = false; DashcamDirty = false; AppHub.Dashcam.ApplySettings(AppHub.Settings.Dashcam); await StartDashcamAsync(); }
+            if (DashcamDirty)
+            {
+                DashcamDirty = false;
+                if (AppHub.Dashcam.ApplySettings(AppHub.Settings.Dashcam)) await StartDashcamAsync();
+            }
         }
 
         private async Task InitAsync()
@@ -65,10 +72,11 @@ namespace DriveDeck.App
             ApplyUiSettings();
 
             _landscape = Window.Current.Bounds.Width >= Window.Current.Bounds.Height;
+            PlaceRail();
             Window.Current.SizeChanged += (s, e) =>
             {
                 bool l = e.Size.Width >= e.Size.Height;
-                if (l != _landscape) { _landscape = l; BuildPages(); }
+                if (l != _landscape) { _landscape = l; PlaceRail(); BuildPages(); }
             };
             var di = DisplayInformation.GetForCurrentView();
             di.OrientationChanged += (s, e) => AppHub.Dashcam.UpdateRotation(s.CurrentOrientation);
@@ -96,15 +104,29 @@ namespace DriveDeck.App
             await StartSensorsAsync();
             await AppHub.RestartObdAsync();
             UpdateWanted();
+            _wantRecording = AppHub.Settings.Dashcam.AutoStart;
             await StartDashcamAsync();
+        }
+
+        /// <summary>Controls on the left in landscape, at the bottom in portrait.</summary>
+        private void PlaceRail()
+        {
+            RailPanel.Orientation = _landscape ? Orientation.Vertical : Orientation.Horizontal;
+            Grid.SetRow(Rail, _landscape ? 0 : 1);
+            Grid.SetColumnSpan(Rail, _landscape ? 1 : 2);
+            Grid.SetColumn(Root, _landscape ? 1 : 0);
+            Grid.SetColumnSpan(Root, _landscape ? 1 : 2);
         }
 
         private void ApplyUiSettings()
         {
             var ui = AppHub.Settings.Ui;
+            var accent = WidgetView.Parse(ui.Accent, Color.FromArgb(255, 63, 169, 245));
+            ((SolidColorBrush)Application.Current.Resources["AccentBrush"]).Color = accent;
+            Strip.Margin = ui.NotificationPosition == "bottom" ? new Thickness(6, 0, 6, 6) : new Thickness(6, 6, 6, 0);
             Grid.SetRow(Strip, ui.NotificationPosition == "bottom" ? 2 : 0);
             Chip.VerticalAlignment = ui.NotificationPosition == "bottom" ? VerticalAlignment.Bottom : VerticalAlignment.Top;
-            Chip.Margin = ui.NotificationPosition == "bottom" ? new Thickness(0, 0, 60, 12) : new Thickness(0, 6, 6, 0);
+            Chip.Margin = ui.NotificationPosition == "bottom" ? new Thickness(0, 0, 8, 12) : new Thickness(0, 8, 8, 0);
             NightDim.Opacity = ui.NightMode ? 0.35 : 0;
             if (ui.KeepScreenOn && _displayRequest == null) { _displayRequest = new DisplayRequest(); _displayRequest.RequestActive(); }
             else if (!ui.KeepScreenOn && _displayRequest != null) { _displayRequest.RequestRelease(); _displayRequest = null; }
@@ -116,11 +138,30 @@ namespace DriveDeck.App
             AppHub.Location.Stop();
             if (c.GpsEnabled) await AppHub.Location.StartAsync();
             AppHub.Impact.Stop();
-            if (c.ImpactDetection)
+            // The sensor also feeds the G-force tile, so it runs even when automatic saving is off.
+            double g = c.ImpactSensitivity == "custom" ? c.ImpactThresholdG : ImpactDetector.PresetThreshold(c.ImpactSensitivity);
+            if (!AppHub.Impact.Start(g) && c.ImpactDetection)
+                AppHub.Notices.Post("acc", Severity.Warning, "No accelerometer", "Impact detection is unavailable.");
+        }
+
+        /// <summary>Stops the dashcam, runs the search for hidden camera abilities and starts the dashcam again.</summary>
+        public async Task<List<string>> RunLabAsync(Action<string> progress)
+        {
+            while (_restarting) await Task.Delay(200);
+            _restarting = true; // keeps the watchdog away
+            List<string> result;
+            try
             {
-                double g = c.ImpactSensitivity == "custom" ? c.ImpactThresholdG : ImpactDetector.PresetThreshold(c.ImpactSensitivity);
-                if (!AppHub.Impact.Start(g)) AppHub.Notices.Post("acc", Severity.Warning, "No accelerometer", "Impact detection is unavailable.");
+                Preview.Source = null;
+                await AppHub.Dashcam.ShutdownAsync();
+                await Task.Delay(800);
+                result = await CameraLab.RunAsync(progress);
             }
+            catch (Exception ex) { AppLog.Error("Lab", ex); result = new List<string> { "The search stopped: " + ex.Message }; }
+            finally { _restarting = false; }
+            await Task.Delay(800);
+            await StartDashcamAsync();
+            return result;
         }
 
         private async Task StartDashcamAsync()
@@ -132,12 +173,16 @@ namespace DriveDeck.App
                 Preview.Source = null;
                 await AppHub.Dashcam.ShutdownAsync();
                 var c = AppHub.Settings.Dashcam;
-                _wantRecording = c.Enabled && c.AutoStart;
                 if (!c.Enabled) return;
+                _lastWatchdog = DateTime.Now;
                 if (!await AppHub.Dashcam.InitializeAsync(c)) return;
                 Preview.Source = AppHub.Dashcam.Capture;
+                Preview.FlowDirection = AppHub.Dashcam.IsFront ? FlowDirection.RightToLeft : FlowDirection.LeftToRight; // like a mirror; the recording is not mirrored
+                var m = AppHub.Dashcam.CurrentMode;
+                ModeBadge.Text = m == null ? "" : (AppHub.Dashcam.IsFront ? "Front  " : "") + (m.Resolution == "2160p" ? "4K" : m.Resolution) + " " + m.Fps;
                 try { await AppHub.Dashcam.Capture.StartPreviewAsync(); }
                 catch (Exception ex) { AppLog.Error("StartPreview", ex); }
+                if (!_wantRecording) { var _ = AppHub.Dashcam.FocusAsync(); } // otherwise done when recording starts
                 if (_wantRecording) AppHub.Dashcam.Start();
             }
             finally { _restarting = false; }
@@ -176,7 +221,7 @@ namespace DriveDeck.App
 
             foreach (var p in pages)
             {
-                var grid = new Grid { Margin = new Thickness(3) };
+                var grid = new Grid { Margin = new Thickness(3, 3, 3, pages.Count > 1 ? 8 : 3) };
                 for (int r = 0; r < p.Rows; r++) grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
                 for (int c = 0; c < p.Columns; c++) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 var widgets = new List<WidgetView>();
@@ -193,6 +238,7 @@ namespace DriveDeck.App
                 Pages.Items.Add(new FlipViewItem { Content = grid });
             }
             Pages.SelectedIndex = 0;
+            BuildDots();
             PositionPreview();
             UpdateWanted();
         }
@@ -206,8 +252,21 @@ namespace DriveDeck.App
             }
         }
 
+        private void BuildDots()
+        {
+            Dots.Children.Clear();
+            if (Pages.Items.Count < 2) return;
+            for (int i = 0; i < Pages.Items.Count; i++)
+                Dots.Children.Add(new Windows.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = 5, Height = 5, Margin = new Thickness(3, 0, 3, 0),
+                    Fill = new SolidColorBrush(i == Pages.SelectedIndex ? Colors.White : Color.FromArgb(255, 80, 92, 106))
+                });
+        }
+
         private void Pages_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            BuildDots();
             PositionPreview();
             UpdateWanted();
         }
@@ -256,34 +315,60 @@ namespace DriveDeck.App
         private void Tick()
         {
             var now = DateTime.Now;
-            foreach (var w in CurrentWidgets)
+            if (AppHub.Impact.Running) AppHub.Values.Set(PidCatalog.ImpactGKey, AppHub.Impact.CurrentG);
+            foreach (var w in CurrentWidgets) w.Refresh(now);
+            if ((now - _lastAlarmCheck).TotalMilliseconds >= 500) { _lastAlarmCheck = now; CheckAlarms(now); }
+            bool recording = AppHub.Dashcam.IsRecording;
+            string glyph = recording ? "" : "";
+            if (RecButton.Content as string != glyph)
             {
-                w.Refresh(now);
-                if (w.Definition == null) continue;
-                string key = "alarm:" + w.Config.Id;
-                if (w.Alert == AlertLevel.Alarm && !_alarmed.Contains(key))
-                {
-                    _alarmed.Add(key);
-                    AppHub.Notices.Post(key, Severity.Alarm, w.Definition.Name + " too high",
-                        w.LastValue.ToString("F" + w.Definition.Decimals) + " " + w.Definition.Unit, TimeSpan.FromMinutes(2));
-                }
-                else if (w.Alert != AlertLevel.Alarm) _alarmed.Remove(key);
+                RecButton.Content = glyph;
+                RecButton.Foreground = new SolidColorBrush(recording ? Colors.White : WidgetView.AlarmColor);
             }
-            RecToggle.Text = AppHub.Dashcam.IsRecording ? "Stop recording" : "Start recording";
+            bool faulty = AppHub.CurrentDtcs != null && AppHub.CurrentDtcs.Count > 0;
+            if (faulty != _faultShown)
+            {
+                _faultShown = faulty;
+                FaultButton.Foreground = new SolidColorBrush(faulty ? WidgetView.WarnColor : Colors.White);
+            }
             PositionPreview();
             var st = AppHub.Dashcam.SegmentStart;
             RecBadge.Text = st.HasValue ? (now.Second % 2 == 0 ? "● REC " : "○ REC ") + (now - st.Value).ToString(@"m\:ss")
                           : AppHub.Dashcam.IsOverheated ? "HOT – paused" : "not recording";
 
             // Watchdog: resume after overheating or a camera error, if the user wants recording.
-            if ((now - _lastWatchdog).TotalSeconds >= 15)
+            bool soon = AppHub.Dashcam.RestartSoon && !AppHub.Dashcam.IsInitialized && (now - _lastWatchdog).TotalSeconds >= 2;
+            if (soon || (now - _lastWatchdog).TotalSeconds >= 15)
             {
                 _lastWatchdog = now;
-                if (_wantRecording && !AppHub.Dashcam.IsRecording && !AppHub.Dashcam.IsOverheated && !_restarting)
+                if (_wantRecording && AppHub.Settings.Dashcam.Enabled && !AppHub.Dashcam.IsRecording && !AppHub.Dashcam.IsOverheated && !_restarting)
                 {
                     if (AppHub.Dashcam.IsInitialized) AppHub.Dashcam.Start();
                     else { var _ = StartDashcamAsync(); }
                 }
+            }
+        }
+
+        /// <summary>Thresholds are checked on all pages, not only on the visible one.</summary>
+        private void CheckAlarms(DateTime now)
+        {
+            List<ValueDefinition> all = null;
+            foreach (var w in AppHub.Settings.Pages.SelectMany(p => p.Widgets))
+            {
+                bool needsValue = w.Kind == WidgetKind.Number || w.Kind == WidgetKind.Gauge || w.Kind == WidgetKind.Bar || w.Kind == WidgetKind.Graph;
+                if (!needsValue || string.IsNullOrEmpty(w.ValueKey) || (double.IsNaN(w.AlarmAbove) && double.IsNaN(w.WarnBelow))) continue;
+                var s = AppHub.Values.Get(w.ValueKey);
+                if (s == null || (now - s.Time).TotalSeconds > ValueHub.StaleSeconds) continue;
+                bool high = !double.IsNaN(w.AlarmAbove) && s.Value >= w.AlarmAbove;
+                bool low = !double.IsNaN(w.WarnBelow) && s.Value <= w.WarnBelow;
+                string key = "alarm:" + w.Id;
+                if (!high && !low) { _alarmed.Remove(key); continue; }
+                if (!_alarmed.Add(key)) continue;
+                if (all == null) all = AppHub.AllValues.ToList();
+                var def = all.FirstOrDefault(v => string.Equals(v.Key, w.ValueKey, StringComparison.OrdinalIgnoreCase));
+                if (def == null) continue;
+                AppHub.Notices.Post(key, high ? Severity.Alarm : Severity.Warning, def.Name + (high ? " too high" : " too low"),
+                    s.Value.ToString("F" + def.Decimals) + " " + def.Unit, TimeSpan.FromMinutes(2));
             }
         }
 
@@ -299,7 +384,6 @@ namespace DriveDeck.App
             StripDetail.Text = n.Detail ?? "";
             Strip.Background = new SolidColorBrush(bg);
             Strip.BorderBrush = new SolidColorBrush(border);
-            Strip.BorderThickness = AppHub.Settings.Ui.NotificationPosition == "bottom" ? new Thickness(0, 2, 0, 0) : new Thickness(0, 0, 0, 2);
             Strip.Visibility = Visibility.Visible;
             UpdateChip();
             int secs = n.Severity == Severity.Info ? 4 : AppHub.Settings.Ui.NotificationCollapseSeconds;
@@ -335,8 +419,6 @@ namespace DriveDeck.App
             ChipGlyph.Text = glyph;
             ChipGlyph.Foreground = new SolidColorBrush(border);
             ChipCount.Text = items.Count.ToString();
-            Chip.BorderBrush = new SolidColorBrush(border);
-            Chip.BorderThickness = new Thickness(1);
         }
 
         private void Strip_Tapped(object sender, Windows.UI.Xaml.Input.TappedRoutedEventArgs e) { CollapseStrip(); OpenNotices(); }
@@ -355,8 +437,10 @@ namespace DriveDeck.App
 
         private void OnImpact(double g)
         {
-            AppHub.Dashcam.TriggerEvent("impact", g);
             var c = AppHub.Settings.Dashcam;
+            if (!c.ImpactDetection || !AppHub.Dashcam.IsRecording) return; // handling the phone while not recording is no accident
+            AppLog.Info("Impact detected");
+            AppHub.Dashcam.TriggerEvent("impact", g);
             ImpactDetail.Text = string.Format("{0:0.0} g at {1:HH:mm:ss}. Video from {2} s before to {3} s after is being saved to Videos\\DriveDeck\\Events.",
                 g, DateTime.Now, c.PreEventSeconds, c.PostEventSeconds);
             CallButton.Visibility = c.OfferEmergencyCall ? Visibility.Visible : Visibility.Collapsed;
@@ -393,6 +477,19 @@ namespace DriveDeck.App
             }
         }
 
+        /// <summary>Switches between the back and the front camera and remembers it. Recording carries on with the other camera.</summary>
+        private async void Flip_Click(object sender, RoutedEventArgs e)
+        {
+            if (_restarting) return;
+            List<string> notes; string err;
+            var s = AppSettings.FromJson(AppHub.Settings.ToJson(), out notes, out err); // a copy, so that the change is noticed
+            if (s == null) return;
+            s.Dashcam.UseFrontCamera = !s.Dashcam.UseFrontCamera;
+            AppHub.Settings = s;
+            try { await AppHub.SaveSettingsAsync(); } catch (Exception ex) { AppLog.Error("Save", ex); }
+            if (AppHub.Dashcam.ApplySettings(s.Dashcam)) await StartDashcamAsync();
+        }
+
         private async void Faults_Click(object sender, RoutedEventArgs e)
         {
             var list = AppHub.CurrentDtcs ?? new List<Dtc>();
@@ -400,7 +497,7 @@ namespace DriveDeck.App
             if (AppHub.Obd == null || AppHub.Obd.State != ObdState.Connected)
                 panel.Children.Add(new TextBlock { Text = "OBD adapter is not connected (" + (AppHub.ObdStatus ?? "off") + ").", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) });
             if (list.Count == 0)
-                panel.Children.Add(new TextBlock { Text = "No emission-related fault codes reported by the engine or gearbox.", TextWrapping = TextWrapping.Wrap });
+                panel.Children.Add(new TextBlock { Text = !AppHub.DtcsRead ? "The fault memory has not been read yet." : "No emission-related fault codes reported by the engine or gearbox.", TextWrapping = TextWrapping.Wrap });
             foreach (var d in list)
             {
                 panel.Children.Add(new TextBlock { Text = d.Code + "  •  " + d.Kind + (string.IsNullOrEmpty(d.Ecu) ? "" : "  •  " + d.Ecu), FontWeight = Windows.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) });

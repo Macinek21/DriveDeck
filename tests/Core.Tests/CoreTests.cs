@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -341,6 +342,169 @@ namespace DriveDeck.Tests
         }
     }
 
+    public class ObdRobustnessTests
+    {
+        [Fact]
+        public async Task FailedFaultReadIsNotNoFaults()
+        {
+            var sim = new ElmSimulator();
+            var c = new ObdClient(sim);
+            await c.InitializeAsync("6", CancellationToken.None);
+            sim.Dtc03 = "CAN ERROR";
+            Assert.Null(await c.ReadDtcsAsync(false, CancellationToken.None));
+            sim.Dtc03 = "NO DATA\r";
+            sim.Silent03 = true;
+            Assert.Null(await c.ReadDtcsAsync(false, CancellationToken.None));
+        }
+
+        [Fact]
+        public async Task LampOfAnyControlUnitCounts()
+        {
+            var sim = new ElmSimulator { SecondUnitMil = true, MilOn = false };
+            var c = new ObdClient(sim);
+            await c.InitializeAsync("6", CancellationToken.None);
+            Assert.True(await c.ReadMilAsync(CancellationToken.None));
+        }
+
+        [Fact]
+        public async Task BoostStopsWhenItsSourceStops()
+        {
+            var sim = new ElmSimulator();
+            var poller = new ObdPoller(ct => Task.FromResult<IObdTransport>(sim), new ObdPollerOptions { MinCycleMs = 20 });
+            int boosts = 0;
+            poller.ValueUpdated += (k, v) => { if (k == PidCatalog.BoostKey) Interlocked.Increment(ref boosts); };
+            poller.SetWanted(PidCatalog.Special.Where(v => v.Key == PidCatalog.BoostKey));
+            poller.Start();
+            await Task.Delay(800);
+            Assert.True(boosts > 0);
+            poller.SetWanted(new List<ValueDefinition>());
+            await Task.Delay(3400);
+            int after = boosts;
+            await Task.Delay(500);
+            Assert.Equal(after, boosts);
+            await poller.StopAsync();
+        }
+
+        [Fact]
+        public async Task IgnitionOffDoesNotMakeValuesUnsupported()
+        {
+            var sim = new ElmSimulator();
+            var poller = new ObdPoller(ct => Task.FromResult<IObdTransport>(sim), new ObdPollerOptions { MinCycleMs = 20 });
+            var unsupported = new List<string>();
+            var lost = new TaskCompletionSource<string>();
+            poller.ValueUnsupported += k => { lock (unsupported) unsupported.Add(k); };
+            poller.StateChanged += (s, m) => { if (s == ObdState.Reconnecting && m.Contains("ignition")) lost.TrySetResult(m); };
+            poller.SetWanted(PidCatalog.Standard.Where(v => v.Key == "obd:0C"));
+            poller.Start();
+            await Task.Delay(400);
+            sim.IgnitionOff = true;
+            Assert.Same(lost.Task, await Task.WhenAny(lost.Task, Task.Delay(5000)));
+            await poller.StopAsync();
+            Assert.Empty(unsupported);
+        }
+    }
+
+    public class VideoTests
+    {
+        [Fact]
+        public void LoopKeepsFootageAnIncidentMayNeed()
+        {
+            var now = new DateTime(2026, 11, 25, 12, 0, 0);
+            var segs = Enumerable.Range(0, 5).Select(i => new SegmentInfo { BaseName = "s" + i, Start = now.AddMinutes(i - 5), End = now.AddMinutes(i - 4), SizeBytes = 100 }).ToList();
+            var all = LoopStoragePolicy.SelectForDeletion(segs, 100, 10000, 0, 100);
+            var kept = LoopStoragePolicy.SelectForDeletion(segs, 100, 10000, 0, 100, now.AddSeconds(-90));
+            Assert.Equal(5, all.Count);
+            Assert.Equal(new[] { "s0", "s1", "s2" }, kept.Select(s => s.BaseName));
+        }
+
+        [Fact]
+        public void ModesFromCameraFormats()
+        {
+            var l = new List<VideoMode>();
+            VideoModes.Add(l, 1920, 1080, 29.97, VideoMode.Stream);
+            VideoModes.Add(l, 1920, 1080, 30, VideoMode.Stream);      // same mode twice
+            VideoModes.Add(l, 1920, 1088, 60, VideoMode.Profile);
+            VideoModes.Add(l, 1600, 1200, 30, VideoMode.Stream);      // 4:3
+            VideoModes.Add(l, 3840, 2160, 30, VideoMode.Stream);
+            VideoModes.Add(l, 1280, 720, 14.3, VideoMode.Stream);
+            Assert.Equal(new[] { "1080p@30", "1080p@60", "2160p@30" }, VideoModes.Sorted(l).Select(m => m.Id));
+            Assert.Equal(1080, l.First(m => m.Fps == 60).Height);
+            Assert.Equal(VideoModes.Sorted(l).Select(m => m.ToString()), VideoModes.Parse(VideoModes.Serialize(l)).Select(m => m.ToString()));
+            Assert.Empty(VideoModes.Parse("x;1,2;;-5,7,9,1"));
+        }
+
+        [Fact]
+        public void PicksClosestMode()
+        {
+            var l = VideoModes.Parse("1280,720,30,0;1920,1080,24,0;1920,1080,30,0;1920,1080,60,1;3840,2160,30,0");
+            Assert.Equal("1080p@60", VideoModes.Pick(l, "1080p", 60).Id);
+            Assert.Equal("2160p@30", VideoModes.Pick(l, "2160p", 60).Id);
+            Assert.Equal("1080p@30", VideoModes.Pick(l.Where(m => !m.Special), "1080p", 60).Id);
+            Assert.Equal("1080p@30", VideoModes.Pick(l, "1440p", 30).Id);
+            Assert.Null(VideoModes.Pick(new List<VideoMode>(), "720p", 30));
+            Assert.Equal(20, VideoModes.RecommendedMbit(1920, 1080, 30));
+            Assert.Equal(11, VideoModes.RecommendedMbit(1280, 720, 30));
+            Assert.Equal(57, VideoModes.RecommendedMbit(3840, 2160, 30));
+            Assert.Equal(60, VideoModes.RecommendedMbit(3840, 2160, 60));
+        }
+
+        private static byte[] Box(string type, params byte[][] content)
+        {
+            var body = content.SelectMany(x => x).ToArray();
+            var n = body.Length + 8;
+            return new[] { (byte)(n >> 24), (byte)(n >> 16), (byte)(n >> 8), (byte)n }.Concat(type.Select(c => (byte)c)).Concat(body).ToArray();
+        }
+
+        private static byte[] U32(params uint[] v) { return v.SelectMany(x => new[] { (byte)(x >> 24), (byte)(x >> 16), (byte)(x >> 8), (byte)x }).ToArray(); }
+
+        private static byte[] Clip(uint frames, uint seconds)
+        {
+            var entry = new byte[36]; entry[32] = 1920 >> 8; entry[33] = 1920 & 255; entry[34] = 1080 >> 8; entry[35] = 1080 & 255;
+            Func<string, byte[], byte[]> trak = (handler, stbl) => Box("trak", Box("mdia", Box("mdhd", U32(0, 0, 0, 1000, seconds * 1000, 0)),
+                Box("hdlr", U32(0, 0), handler.Select(c => (byte)c).ToArray(), U32(0, 0, 0)), Box("minf", Box("stbl", stbl))));
+            var video = Box("stsd", U32(0, 1), entry).Concat(Box("stsz", U32(0, 0, frames))).ToArray();
+            return Box("ftyp", U32(0)).Concat(Box("mdat", new byte[500])).Concat(Box("moov", trak("soun", Box("stsz", U32(0, 0, 9))), trak("vide", video))).ToArray();
+        }
+
+        [Fact]
+        public void MeasuresRealFrameRate()
+        {
+            var i = Mp4Info.Read(new MemoryStream(Clip(1770, 60)));
+            Assert.Equal(29.5, i.Fps, 3);
+            Assert.Equal(1920, i.Width);
+            Assert.Equal(1080, i.Height);
+        }
+
+        [Fact]
+        public void PaddedFrameRatesAreSeen()
+        {
+            Func<uint[], Mp4Info> read = sizes =>
+            {
+                var stbl = Box("stsz", U32(0, 0, (uint)sizes.Length).Concat(U32(sizes)).ToArray());
+                var trak = Box("trak", Box("mdia", Box("mdhd", U32(0, 0, 0, 1000, 1000, 0)), Box("hdlr", U32(0, 0), "vide".Select(c => (byte)c).ToArray(), U32(0, 0, 0)), Box("minf", Box("stbl", stbl))));
+                return Mp4Info.Read(new MemoryStream(Box("moov", trak)));
+            };
+            Assert.Equal(0.5, read(Enumerable.Range(0, 60).Select(i => i % 2 == 0 ? 50000u : 200u).ToArray()).TinyShare, 3);
+            Assert.Equal(0, read(Enumerable.Range(0, 60).Select(i => 40000u + (uint)i * 100).ToArray()).TinyShare, 3);
+        }
+
+        [Fact]
+        public void BrokenClipsAreNotMeasured()
+        {
+            var good = Clip(100, 5);
+            Assert.Null(Mp4Info.Read(new MemoryStream(new byte[0])));
+            Assert.Null(Mp4Info.Read(new MemoryStream(Box("ftyp", U32(0)).Concat(Box("mdat", new byte[50])).ToArray())));
+            for (int n = 0; n < good.Length; n += 3) Mp4Info.Read(new MemoryStream(good.Take(n).ToArray())); // must not throw
+            var rnd = new Random(1);
+            for (int k = 0; k < 3000; k++)
+            {
+                var b = (byte[])good.Clone();
+                for (int j = 0; j < 4; j++) b[rnd.Next(b.Length)] = (byte)rnd.Next(256);
+                Mp4Info.Read(new MemoryStream(b));
+            }
+        }
+    }
+
     public class StorageAndEventTests
     {
         private const ulong MB = 1024 * 1024;
@@ -517,7 +681,7 @@ namespace DriveDeck.Tests
             List<string> notes; string err;
             var back = AppSettings.FromJson(s.ToJson(), out notes, out err);
             Assert.Null(err);
-            Assert.Equal(20000, back.Dashcam.BitrateKbps);
+            Assert.Equal(60000, back.Dashcam.BitrateKbps);
             Assert.Equal(30, back.Dashcam.SegmentSeconds);
             Assert.Equal(8, back.Dashcam.StorageCapGb);
             Assert.Equal("112", back.Dashcam.EmergencyNumber);
